@@ -1,355 +1,331 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Tv, 
   Sparkles, 
-  Flame, 
-  Play, 
-  Pause, 
-  Check, 
-  AlertCircle,
-  Sliders,
-  Maximize
+  Maximize, 
+  Minimize, 
+  ArrowLeft,
+  Tv,
+  Plus
 } from 'lucide-react';
 import { MenuItem, AppCustomizationSettings } from '../../types';
 import { DEFAULT_CUSTOMIZATION_SETTINGS } from '../../data/customizationSettings';
+import { RoastupLogo, RoastupPotatoIcon } from '../brand/RoastupBrand';
 
 interface DigitalSignageMenuProps {
   menuItems: MenuItem[];
   customization?: AppCustomizationSettings;
   onOpenStudio?: () => void;
+  standaloneTvMode?: boolean;
+  initialChannel?: number;
+  onExit?: () => void;
 }
 
 export const DigitalSignageMenu: React.FC<DigitalSignageMenuProps> = ({ 
   menuItems, 
   customization = DEFAULT_CUSTOMIZATION_SETTINGS,
-  onOpenStudio 
+  initialChannel = 0,
+  onExit
 }) => {
-  const categories = customization.categoryOrder && customization.categoryOrder.length > 0 
+  const allCategories = customization.categoryOrder && customization.categoryOrder.length > 0 
     ? customization.categoryOrder 
     : ['Loaded Roast Potatoes', 'Roti Roast Potato Wraps', 'Sides', 'Meal Deals', 'Sauces & Dips', 'Drinks'];
 
+  // Multi-Screen Channel Setup:
+  // 0: All categories (auto-cycle every N seconds)
+  // 1: Loaded Roast Potatoes & Spuds
+  // 2: Roti Wraps & Sides
+  // 3: Meal Deals & Drinks
+  // 4+: Custom screen
+  const [channels, setChannels] = useState<Array<{ id: number; name: string; categories: string[] }>>([
+    { id: 0, name: 'All (Cycle)', categories: allCategories },
+    { id: 1, name: 'Screen 1 (Spuds)', categories: allCategories.filter(c => c.toLowerCase().includes('potato') || c.toLowerCase().includes('loaded') || c.toLowerCase().includes('build')) },
+    { id: 2, name: 'Screen 2 (Wraps & Sides)', categories: allCategories.filter(c => c.toLowerCase().includes('wrap') || c.toLowerCase().includes('side') || c.toLowerCase().includes('sauce') || c.toLowerCase().includes('dip')) },
+    { id: 3, name: 'Screen 3 (Deals & Drinks)', categories: allCategories.filter(c => c.toLowerCase().includes('deal') || c.toLowerCase().includes('drink') || c.toLowerCase().includes('beverage')) }
+  ]);
+
+  const [selectedChannelId, setSelectedChannelId] = useState<number>(initialChannel || 0);
   const [activeCategoryIndex, setActiveCategoryIndex] = useState<number>(0);
-  const [autoCycle, setAutoCycle] = useState<boolean>(customization.digitalSignage.autoCycle);
+  const [showControls, setShowControls] = useState<boolean>(false);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+
+  // Auto-hide floating controls after 3.5 seconds of mouse inactivity
+  useEffect(() => {
+    let timeout: any;
+    const handleMouseMove = () => {
+      setShowControls(true);
+      clearTimeout(timeout);
+      timeout = setTimeout(() => setShowControls(false), 3500);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      clearTimeout(timeout);
+    };
+  }, []);
+
+  const activeChannel = channels.find(c => c.id === selectedChannelId) || channels[0];
+  const channelCategories = activeChannel.categories.length > 0 ? activeChannel.categories : allCategories;
 
   const cycleMs = (customization.digitalSignage.cycleInterval || 10) * 1000;
+  const isAutoCycling = selectedChannelId === 0 && channelCategories.length > 1;
 
-  // Auto-cycle categories according to configured interval
+  // Auto-cycle through categories when in rotation mode
   useEffect(() => {
-    if (!autoCycle || categories.length <= 1) return;
+    if (!isAutoCycling) return;
     const interval = setInterval(() => {
-      setActiveCategoryIndex(prev => (prev + 1) % categories.length);
+      setActiveCategoryIndex(prev => (prev + 1) % channelCategories.length);
     }, cycleMs);
     return () => clearInterval(interval);
-  }, [autoCycle, categories.length, cycleMs]);
+  }, [isAutoCycling, channelCategories.length, cycleMs]);
 
-  const currentCategory = categories[activeCategoryIndex] || categories[0];
-  const itemsInCurrentCategory = menuItems.filter(i => i.category === currentCategory);
+  // Current category to render
+  const safeIndex = activeCategoryIndex % channelCategories.length;
+  const currentCategory = channelCategories[safeIndex] || channelCategories[0];
+  const itemsInCurrentCategory = menuItems.filter(i => i.category === currentCategory && i.inStock !== false);
 
-  // Featured spotlight dish
-  const featuredItem = menuItems.find(i => i.id === customization.digitalSignage.featuredItemId) ||
-    menuItems.find(i => i.name === 'The OG Loaded') || 
-    menuItems[0];
-
-  const { 
-    layoutMode, 
-    showImages, 
-    showDescriptions, 
-    showVariations, 
-    showDietaryBadges, 
-    tickerText, 
-    tickerSpeed,
+  const {
+    layoutMode = 'grid-2col',
+    showImages = true,
+    showDescriptions = true,
+    showVariations = true,
+    showDietaryBadges = true,
+    tickerText = '',
+    tickerSpeed = 'normal',
     mealDealTitle,
     mealDealPrice,
     mealDealDesc
   } = customization.digitalSignage;
 
-  // Marquee speed class
-  const tickerAnimClass = tickerSpeed === 'off' 
-    ? 'hidden' 
-    : tickerSpeed === 'fast' 
-    ? 'animate-marquee-fast' 
-    : tickerSpeed === 'slow' 
-    ? 'animate-marquee-slow' 
-    : 'animate-marquee';
+  const isSpotlightLayout = layoutMode === 'spotlight';
+  const featuredItem = menuItems.find(i => i.id === customization.digitalSignage.featuredItemId) || menuItems[0];
 
-  // Grid layout class based on settings
-  const gridClass = layoutMode === 'grid-3col' 
-    ? 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5'
-    : 'grid grid-cols-1 md:grid-cols-2 gap-3.5';
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+      setIsFullscreen(true);
+    } else {
+      document.exitFullscreen().catch(() => {});
+      setIsFullscreen(false);
+    }
+  };
+
+  const handleAddCustomScreen = () => {
+    const nextId = channels.length;
+    const name = `Screen ${nextId} (Custom)`;
+    const newChan = { id: nextId, name, categories: allCategories };
+    setChannels(prev => [...prev, newChan]);
+    setSelectedChannelId(nextId);
+  };
 
   return (
-    <div className={`flex-1 flex flex-col bg-[#FBFBFA] text-stone-900 overflow-hidden select-none font-style-${customization.fontFamily} scale-${customization.fontSizeScale}`}>
-      {/* Signage Top Control Header (Bar for screen operators) */}
-      <div className="px-6 py-2.5 bg-white border-b border-stone-200 flex items-center justify-between text-xs shadow-2xs">
-        <div className="flex items-center gap-3">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="font-black tracking-wider uppercase text-stone-800">
-            ROASTUP Digital Menu TV • 1080p/4K Live Board
-          </span>
-          <span className="hidden sm:inline-block text-[10px] font-bold px-2 py-0.5 rounded-md bg-stone-100 text-stone-500 border border-stone-200">
-            {layoutMode.toUpperCase()}
-          </span>
-        </div>
-
-        {/* Category Pills & Controls */}
-        <div className="flex items-center gap-2">
-          <div className="hidden md:flex items-center gap-1 bg-stone-100 p-1 rounded-xl border border-stone-200 overflow-x-auto max-w-md scrollbar-none">
-            {categories.map((cat, idx) => (
-              <button
-                key={cat}
-                onClick={() => {
-                  setActiveCategoryIndex(idx);
-                  setAutoCycle(false);
-                }}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold transition-colors cursor-pointer whitespace-nowrap ${
-                  activeCategoryIndex === idx
-                    ? 'bg-white text-stone-950 shadow-xs ring-1 ring-stone-200'
-                    : 'text-stone-500 hover:text-stone-900'
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
+    <div className="h-screen max-h-screen w-screen flex flex-col bg-[#FBFBFA] dark:bg-stone-950 text-stone-900 dark:text-stone-100 overflow-hidden select-none font-sans relative">
+      {/* PURE DIGITAL SIGNAGE BOARD (Zero top navbar, clean full-screen TV view) */}
+      <div className="flex-1 min-h-0 flex flex-col justify-between overflow-hidden p-5 md:p-6 lg:p-8">
+        {/* Brand Header & Active Category Indicator */}
+        <div className="flex items-center justify-between border-b-2 border-stone-900 dark:border-stone-100 pb-3 mb-4 shrink-0">
+          <div className="flex items-center gap-3.5">
+            <RoastupPotatoIcon size="lg" className="ring-2 ring-amber-400/50 shadow-xs" />
+            <div>
+              <div className="flex items-center gap-2.5">
+                <RoastupLogo size="md" />
+                <span className="text-[10px] px-2.5 py-0.5 rounded-md bg-stone-900 text-amber-400 dark:bg-white dark:text-stone-950 font-black tracking-widest uppercase">
+                  {selectedChannelId > 0 ? activeChannel.name : 'Master Menu Board'}
+                </span>
+              </div>
+              <p className="text-[11px] text-stone-500 dark:text-stone-400 font-extrabold uppercase tracking-widest mt-0.5">
+                100% Fresh British Maris Piper Potatoes • Roasted Hourly
+              </p>
+            </div>
           </div>
 
-          <button
-            onClick={() => setAutoCycle(!autoCycle)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-colors cursor-pointer ${
-              autoCycle ? 'bg-amber-100 text-amber-900 border-amber-300' : 'bg-stone-100 text-stone-600 border-stone-200'
-            }`}
-            title="Toggle automatic rotation of categories"
-          >
-            {autoCycle ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-            <span className="hidden sm:inline">{autoCycle ? `Cycle (${customization.digitalSignage.cycleInterval}s)` : 'Paused'}</span>
-          </button>
-
-          {onOpenStudio && (
-            <button
-              onClick={onOpenStudio}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-stone-950 text-xs font-black transition-colors shadow-2xs cursor-pointer"
-              title="Open customization studio"
-            >
-              <Sliders className="w-3.5 h-3.5" />
-              <span>Customize TV</span>
-            </button>
-          )}
+          {/* Active Category Display */}
+          <div className="text-right">
+            <span className="text-[10px] font-black tracking-widest uppercase text-amber-600 dark:text-amber-400 block">
+              Now Serving
+            </span>
+            <span className="text-2xl lg:text-3xl font-black text-stone-900 dark:text-white tracking-tight uppercase">
+              {currentCategory}
+            </span>
+          </div>
         </div>
-      </div>
 
-      {/* Main Digital Board Showcase */}
-      <div className="flex-1 p-5 lg:p-8 flex flex-col lg:flex-row gap-6 overflow-hidden">
-        {/* LEFT COLUMN: Active Category Menu Cards */}
-        <div className="flex-1 flex flex-col justify-between overflow-hidden">
-          <div>
-            {/* Category Header */}
-            <div className="flex items-baseline justify-between border-b-2 border-amber-400 pb-2.5 mb-4">
-              <div className="flex items-center gap-3">
-                <span className="text-2xl lg:text-3xl">🥔</span>
-                <h1 className="text-2xl lg:text-3xl font-black uppercase tracking-tight text-stone-900">
-                  {currentCategory}
-                </h1>
-              </div>
-              <span className="text-xs font-mono font-extrabold text-stone-600 tracking-wider uppercase">
-                {itemsInCurrentCategory.length} Dishes
-              </span>
-            </div>
-
-            {/* Menu Items Cards Grid */}
-            <div className={`${gridClass} overflow-y-auto max-h-[calc(100vh-230px)] pr-1`}>
+        {/* Dynamic Items Content Area */}
+        <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-5 overflow-hidden items-stretch">
+          {/* Main Items Catalog */}
+          <div className={`${isSpotlightLayout && featuredItem ? 'lg:col-span-8' : 'lg:col-span-12'} flex flex-col justify-between overflow-hidden min-h-0`}>
+            <div className={`grid gap-3 flex-1 min-h-0 overflow-y-auto pr-1 ${
+              layoutMode === 'grid-3col' 
+                ? 'grid-cols-1 md:grid-cols-2 xl:grid-cols-3' 
+                : 'grid-cols-1 md:grid-cols-2'
+            }`}>
               {itemsInCurrentCategory.map(item => (
-                <div
+                <div 
                   key={item.id}
-                  className={`rounded-3xl border transition-all overflow-hidden flex flex-col justify-between ${
-                    !item.inStock
-                      ? 'bg-stone-100/50 border-stone-200 opacity-55'
-                      : 'bg-white border-stone-200 hover:border-amber-400 shadow-2xs'
-                  }`}
+                  className="p-3.5 rounded-3xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 flex items-center justify-between gap-3.5 shadow-2xs"
                 >
-                  {/* Photo Header (if item has photo & showImages is true) */}
-                  {showImages && item.imageUrl && (
-                    <div className="h-32 sm:h-36 w-full overflow-hidden relative bg-stone-100">
-                      <img
-                        src={item.imageUrl}
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    {showImages && item.imageUrl && (
+                      <img 
+                        src={item.imageUrl} 
                         alt={item.name}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                        onError={(e) => {
-                          (e.target as HTMLElement).style.display = 'none';
-                        }}
+                        className="w-14 h-14 rounded-2xl object-cover border border-stone-200 dark:border-stone-700 shrink-0"
+                        referrerPolicy="no-referrer"
                       />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent pointer-events-none" />
-                      
-                      {/* Price badge overlaid on photo */}
-                      <div className="absolute bottom-2.5 right-2.5 bg-amber-400 text-stone-950 font-black font-mono text-sm px-2.5 py-1 rounded-xl shadow-xs">
-                        £{item.defaultPrice.toFixed(2)}
-                      </div>
-
-                      {/* Tag badges over photo */}
-                      {showDietaryBadges && item.tags && item.tags.length > 0 && (
-                        <div className="absolute top-2.5 left-2.5 flex flex-wrap gap-1">
-                          {item.tags.includes('signature') && (
-                            <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-stone-950/80 text-amber-400 backdrop-blur-xs">
-                              ★ Signature
-                            </span>
-                          )}
-                          {item.tags.includes('spicy') && (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-rose-600/90 text-white backdrop-blur-xs">
-                              🌶️ Spicy
-                            </span>
-                          )}
-                          {item.tags.includes('vegetarian') && (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-600/90 text-white backdrop-blur-xs">
-                              🌱 Veg
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Card Content Area */}
-                  <div className="p-4 flex-1 flex flex-col justify-between">
-                    <div>
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2">
-                            <h3 className="text-base font-extrabold text-stone-900 tracking-tight leading-snug">
-                              {item.name}
-                            </h3>
-                            {!item.inStock && (
-                              <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 border border-rose-300">
-                                Sold Out
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Fallback tags if no photo */}
-                          {(!showImages || !item.imageUrl) && showDietaryBadges && item.tags && item.tags.length > 0 && (
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {item.tags.includes('signature') && (
-                                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-md bg-amber-100 text-amber-900">
-                                  ★ Signature
-                                </span>
-                              )}
-                              {item.tags.includes('spicy') && <span className="text-xs">🌶️</span>}
-                              {item.tags.includes('vegetarian') && <span className="text-xs">🌱</span>}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Price badge (when no photo) */}
-                        {(!showImages || !item.imageUrl) && (
-                          <div className="text-right shrink-0">
-                            <span className="text-base font-black text-stone-950 font-mono bg-amber-100 text-amber-950 px-2.5 py-1 rounded-xl border border-amber-300">
-                              £{item.defaultPrice.toFixed(2)}
-                            </span>
-                          </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <h4 className="text-sm font-black text-stone-900 dark:text-white truncate">
+                          {item.name}
+                        </h4>
+                        {showDietaryBadges && item.tags?.includes('signature') && (
+                          <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-amber-400 text-stone-950 shrink-0">
+                            ★ Top Pick
+                          </span>
                         )}
                       </div>
-
-                      {showDescriptions && item.description && (
-                        <p className="text-xs text-stone-500 mt-2 leading-relaxed line-clamp-2">
+                      {showDescriptions && (
+                        <p className="text-[11px] text-stone-500 dark:text-stone-400 line-clamp-2 mt-0.5 leading-tight">
                           {item.description}
                         </p>
                       )}
                     </div>
+                  </div>
 
-                    {/* Variations Pricing Pill */}
+                  <div className="text-right shrink-0">
+                    <span className="text-lg font-black text-stone-900 dark:text-white font-mono">
+                      £{(item.defaultPrice ?? item.variations?.[0]?.price ?? 0).toFixed(2)}
+                    </span>
                     {showVariations && item.variations && item.variations.length > 1 && (
-                      <div className="mt-3 pt-2 border-t border-stone-100 flex items-center justify-between text-xs">
-                        <span className="text-[11px] font-bold text-stone-400">Portions:</span>
-                        <div className="flex items-center gap-2">
-                          {item.variations.map(v => (
-                            <span key={v.id} className="text-[11px] font-mono">
-                              <span className="text-stone-400">{v.name}: </span>
-                              <strong className="text-stone-900 font-bold">£{v.price.toFixed(2)}</strong>
-                            </span>
-                          ))}
-                        </div>
-                      </div>
+                      <span className="block text-[9px] text-stone-400 font-bold uppercase">
+                        From £{Math.min(...item.variations.map(v => v.price)).toFixed(2)}
+                      </span>
                     )}
                   </div>
                 </div>
               ))}
             </div>
-          </div>
-        </div>
 
-        {/* RIGHT COLUMN: Feature of the Day / Meal Deal Highlight Banner */}
-        <div className="w-full lg:w-96 flex flex-col gap-4 shrink-0">
-          {/* Hero Feature Spotlight Box */}
-          {featuredItem && (
-            <div className="p-6 rounded-3xl bg-white border-2 border-amber-400 shadow-sm flex flex-col justify-between relative overflow-hidden">
-              <div className="absolute -top-12 -right-12 w-36 h-36 bg-amber-200/40 rounded-full blur-2xl pointer-events-none" />
-
-              <div>
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-400 text-stone-950 font-black text-[11px] uppercase tracking-wider mb-3 shadow-2xs">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  Customer Spotlight
-                </div>
-
-                {featuredItem.imageUrl && showImages && (
-                  <div className="w-full h-44 rounded-2xl overflow-hidden mb-3 border border-stone-200 bg-stone-100">
-                    <img
-                      src={featuredItem.imageUrl}
-                      alt={featuredItem.name}
-                      className="w-full h-full object-cover"
-                      onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
-                    />
+            {/* Signature Meal Deal Footer Banner */}
+            {mealDealTitle && (
+              <div className="mt-3 p-3.5 rounded-2xl bg-amber-400 text-stone-950 flex items-center justify-between shadow-xs shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-stone-950 text-amber-400 flex items-center justify-center font-black">
+                    <Sparkles className="w-4 h-4" />
                   </div>
-                )}
+                  <div>
+                    <span className="text-[10px] font-black uppercase tracking-wider block text-stone-900">
+                      Deal of the Day
+                    </span>
+                    <h3 className="text-sm font-black tracking-tight">{mealDealTitle}</h3>
+                    <p className="text-[11px] text-stone-800 font-medium line-clamp-1">{mealDealDesc}</p>
+                  </div>
+                </div>
+                <div className="text-right pl-3">
+                  <span className="text-xl font-black font-mono">{mealDealPrice}</span>
+                </div>
+              </div>
+            )}
+          </div>
 
-                <h2 className="text-2xl font-black text-stone-900 tracking-tight">
+          {/* Spotlight Hero Dish (When Spotlight layout is active) */}
+          {isSpotlightLayout && featuredItem && (
+            <div className="hidden lg:flex lg:col-span-4 flex-col rounded-3xl bg-stone-900 text-white p-5 justify-between overflow-hidden shadow-xl border border-stone-800 shrink-0">
+              <div>
+                <span className="text-[9px] font-black uppercase tracking-widest text-amber-400 bg-amber-400/20 px-2.5 py-0.5 rounded-full border border-amber-400/30">
+                  Chef's Highlight
+                </span>
+                <h3 className="text-xl font-black tracking-tight mt-2 text-white">
                   {featuredItem.name}
-                </h2>
-                <p className="text-xs text-stone-600 mt-2 leading-relaxed">
+                </h3>
+                <p className="text-[11px] text-stone-400 mt-1 line-clamp-3">
                   {featuredItem.description}
                 </p>
-
-                {featuredItem.variations && featuredItem.variations.length > 0 && (
-                  <div className="mt-4 p-3 rounded-2xl bg-stone-50 border border-stone-200 space-y-1.5 text-xs">
-                    {featuredItem.variations.map(v => (
-                      <div key={v.id} className="flex justify-between font-mono">
-                        <span className="text-stone-500">{v.name} Portion</span>
-                        <span className="text-stone-900 font-black">£{v.price.toFixed(2)}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
 
-              <div className="mt-4 pt-3 border-t border-stone-100 text-center">
-                <span className="text-xs font-extrabold text-amber-800">
-                  Triple-Cooked Maris Piper Roasties
+              {featuredItem.imageUrl && (
+                <div className="my-3 rounded-2xl overflow-hidden border border-stone-800 shadow-md h-40">
+                  <img 
+                    src={featuredItem.imageUrl} 
+                    alt={featuredItem.name}
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+              )}
+
+              <div className="flex items-center justify-between border-t border-stone-800 pt-3">
+                <span className="text-xs font-bold text-stone-400">Portion from</span>
+                <span className="text-2xl font-black text-amber-400 font-mono">
+                  £{(featuredItem.defaultPrice || 0).toFixed(2)}
                 </span>
               </div>
             </div>
           )}
-
-          {/* Value Meal Deal Callout */}
-          <div className="p-5 rounded-3xl bg-amber-400 text-stone-950 shadow-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-black uppercase tracking-wider bg-stone-950 text-white px-2 py-0.5 rounded-md">
-                Meal Deal Special
-              </span>
-              <span className="text-xl font-black font-mono">{mealDealPrice || 'FROM £7.00'}</span>
-            </div>
-            <h4 className="text-lg font-black mt-2">{mealDealTitle || 'The Solo Roast Deal'}</h4>
-            <p className="text-xs font-medium text-stone-900 mt-0.5 leading-relaxed">
-              {mealDealDesc || 'Any loaded roast potato + cold soft drink of your choice.'}
-            </p>
-          </div>
         </div>
+
+        {/* Bottom Crawl Marquee Ticker */}
+        {tickerText && tickerSpeed !== 'off' && (
+          <div className="mt-3 bg-stone-900 text-amber-400 py-1.5 px-4 rounded-xl overflow-hidden shrink-0 border border-stone-800">
+            <div className="whitespace-nowrap flex items-center font-bold text-xs uppercase tracking-wider animate-marquee">
+              <span className="mr-8">{tickerText}</span>
+              <span className="mr-8">{tickerText}</span>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* BOTTOM TICKER / ROTATING PROMOTIONAL BANNER */}
-      {tickerSpeed !== 'off' && (
-        <div className="py-2.5 px-6 bg-amber-400 text-stone-950 font-black text-xs tracking-wider uppercase flex items-center overflow-hidden whitespace-nowrap shadow-xs">
-          <div className={`${tickerAnimClass} flex items-center gap-12 font-black`}>
-            <span>{tickerText}</span>
-            <span>{tickerText}</span>
-          </div>
+      {/* DISCREET FLOATING CONTROL BAR (Auto-hides on inactivity; reveals on mouse move) */}
+      <div className={`fixed bottom-4 right-4 z-50 flex items-center gap-2 bg-stone-900/90 dark:bg-stone-800/90 backdrop-blur-md p-1.5 rounded-2xl shadow-xl border border-stone-700 transition-all duration-300 ${
+        showControls ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'
+      }`}>
+        {onExit && (
+          <button
+            onClick={onExit}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition-colors cursor-pointer"
+            title="Exit Menu Board & Back to POS"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Back to POS</span>
+          </button>
+        )}
+
+        {/* Multi-screen channel switchers */}
+        <div className="flex items-center gap-1 bg-black/40 p-1 rounded-xl">
+          {channels.map(ch => (
+            <button
+              key={ch.id}
+              onClick={() => {
+                setSelectedChannelId(ch.id);
+                setActiveCategoryIndex(0);
+              }}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                selectedChannelId === ch.id
+                  ? 'bg-amber-400 text-stone-950 font-black shadow-xs'
+                  : 'text-stone-300 hover:text-white'
+              }`}
+            >
+              {ch.name}
+            </button>
+          ))}
+
+          <button
+            onClick={handleAddCustomScreen}
+            className="p-1 rounded-lg text-stone-400 hover:text-amber-400 transition-colors cursor-pointer"
+            title="Add another screen channel"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
         </div>
-      )}
+
+        <button
+          onClick={toggleFullscreen}
+          className="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition-colors cursor-pointer"
+          title="Toggle Fullscreen"
+        >
+          {isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
+        </button>
+      </div>
     </div>
   );
 };

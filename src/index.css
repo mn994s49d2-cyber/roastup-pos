@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* Customizable Typography Styles */
 .font-style-sans, :root.font-style-sans {
   font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;

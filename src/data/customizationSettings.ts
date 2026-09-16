@@ -25,19 +25,33 @@ export const DEFAULT_CUSTOMIZATION_SETTINGS: AppCustomizationSettings = {
     featuredItemId: 'item-001',
     mealDealTitle: 'The Solo Roast Deal',
     mealDealPrice: 'FROM £7.00',
-    mealDealDesc: 'Any loaded roast potato portion + cold can/bottle drink of your choice.'
+    mealDealDesc: 'Any loaded roast potato portion + cold can/bottle drink of your choice.',
+    activeChannel: 0
+  },
+  themeMode: 'light',
+  printer: {
+    type: 'browser',
+    paperWidth: 80,
+    autoPrintOnPayment: true
+  },
+  paymentTerminal: {
+    provider: 'simulator',
+    status: 'connected',
+    testMode: true
   }
 };
 
 const STORAGE_KEY = 'roastup_customization_v1';
+let memoryCustomizationCache: AppCustomizationSettings | null = null;
 
 export function loadSavedCustomization(): AppCustomizationSettings {
+  if (memoryCustomizationCache) return memoryCustomizationCache;
   if (typeof window === 'undefined') return DEFAULT_CUSTOMIZATION_SETTINGS;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return {
+      const combined = {
         ...DEFAULT_CUSTOMIZATION_SETTINGS,
         ...parsed,
         digitalSignage: {
@@ -45,21 +59,24 @@ export function loadSavedCustomization(): AppCustomizationSettings {
           ...(parsed.digitalSignage || {})
         }
       };
+      memoryCustomizationCache = combined;
+      return combined;
     }
   } catch (err) {
-    console.error('Error loading customization settings', err);
+    console.warn('Error reading customization settings from storage, using defaults:', err);
   }
   return DEFAULT_CUSTOMIZATION_SETTINGS;
 }
 
 export function saveCustomizationLocally(settings: AppCustomizationSettings): void {
+  memoryCustomizationCache = settings;
+  // Apply font and theme styling class to root element
+  applyCustomizationToDOM(settings);
   if (typeof window === 'undefined') return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-    // Apply font styling class to root element
-    applyFontToDocument(settings.fontFamily, settings.fontSizeScale);
   } catch (err) {
-    console.error('Error saving customization settings', err);
+    console.warn('Error saving customization settings to storage:', err);
   }
 }
 
@@ -79,5 +96,18 @@ export function applyFontToDocument(font: string, scale: string): void {
 }
 
 export function applyCustomizationToDOM(settings: AppCustomizationSettings): void {
+  if (typeof document === 'undefined') return;
   applyFontToDocument(settings.fontFamily, settings.fontSizeScale);
+  
+  // Apply dark / light mode
+  const isDark = settings.themeMode === 'dark';
+  if (isDark) {
+    document.documentElement.classList.add('dark');
+    document.body.classList.add('dark');
+    document.documentElement.style.colorScheme = 'dark';
+  } else {
+    document.documentElement.classList.remove('dark');
+    document.body.classList.remove('dark');
+    document.documentElement.style.colorScheme = 'light';
+  }
 }

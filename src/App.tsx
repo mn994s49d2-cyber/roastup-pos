@@ -10,12 +10,12 @@ import { INITIAL_INVENTORY } from './data/defaultInventory';
 import { Navbar } from './components/Navbar';
 import { PosRegister } from './components/pos/PosRegister';
 import { KitchenDisplayScreen } from './components/kds/KitchenDisplayScreen';
+import { FrontOfHouseScreen } from './components/foh/FrontOfHouseScreen';
+import { OrderHistoryScreen } from './components/history/OrderHistoryScreen';
 import { DigitalSignageMenu } from './components/signage/DigitalSignageMenu';
 import { OrderStatusBoard } from './components/signage/OrderStatusBoard';
 import { CustomerFacingDisplay } from './components/signage/CustomerFacingDisplay';
-import { InventoryManager } from './components/inventory/InventoryManager';
-import { NetworkHub } from './components/network/NetworkHub';
-import { MenuScreenStudio } from './components/studio/MenuScreenStudio';
+import { AdminHub } from './components/admin/AdminHub';
 import { 
   DEFAULT_CUSTOMIZATION_SETTINGS, 
   loadCustomizationLocally, 
@@ -27,18 +27,36 @@ export default function App() {
   // Screen mode detection via URL parameter (for dedicated device boot e.g. ?screen=kds)
   const getInitialScreen = (): ScreenMode => {
     if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const s = params.get('screen') || params.get('mode');
-      if (s === 'kds') return 'kds';
-      if (s === 'signage_menu' || s === 'signage' || s === 'menu') return 'signage_menu';
-      if (s === 'studio' || s === 'customizer') return 'studio';
-      if (s === 'order_status' || s === 'pickup') return 'order_status';
-      if (s === 'cfd' || s === 'customer') return 'cfd';
-      if (s === 'inventory') return 'inventory';
-      if (s === 'network_hub' || s === 'network' || s === 'devices') return 'network_hub';
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const s = params.get('screen') || params.get('mode');
+        if (s === 'kds') return 'kds';
+        if (s === 'foh' || s === 'drinks' || s === 'bar') return 'foh';
+        if (s === 'history' || s === 'order_history') return 'order_history';
+        if (s === 'signage_menu' || s === 'signage' || s === 'menu') return 'signage_menu';
+        if (s === 'order_status' || s === 'pickup' || s === 'collection') return 'order_status';
+        if (s === 'cfd' || s === 'customer') return 'cfd';
+        if (s === 'admin' || s === 'settings') return 'admin';
+        if (s === 'studio') return 'admin';
+        if (s === 'inventory') return 'admin';
+        if (s === 'network_hub' || s === 'network') return 'admin';
+      } catch {
+        // Fallback for restricted iframe environments
+      }
     }
     return 'pos';
   };
+
+  // Detect standalone TV mode (e.g. ?tv=true or ?standalone=true)
+  const isStandaloneTv = (() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('tv') === 'true' || params.get('standalone') === 'true';
+      } catch {}
+    }
+    return false;
+  })();
 
   const [currentScreen, setCurrentScreen] = useState<ScreenMode>(getInitialScreen);
   const [menuItems, setMenuItems] = useState<MenuItem[]>(INITIAL_MENU_ITEMS);
@@ -70,7 +88,25 @@ export default function App() {
 
         if (ordersRes.ok) {
           const ordersData = await ordersRes.json();
-          if (Array.isArray(ordersData)) setOrders(ordersData);
+          if (Array.isArray(ordersData)) {
+            setOrders(prev => {
+              // Merge server orders without regressing optimistic bump states
+              return ordersData.map((srv: Order) => {
+                const local = prev.find(p => p.id === srv.id);
+                if (!local) return srv;
+                const isLocalMoreAdvanced =
+                  (local.status === 'completed' && srv.status !== 'completed') ||
+                  (local.status === 'ready' && srv.status === 'preparing');
+
+                return {
+                  ...srv,
+                  kitchenBumped: srv.kitchenBumped ?? local.kitchenBumped ?? false,
+                  fohBumped: srv.fohBumped ?? local.fohBumped ?? false,
+                  status: isLocalMoreAdvanced ? local.status : srv.status
+                };
+              });
+            });
+          }
         }
 
         if (invRes.ok) {
@@ -81,8 +117,19 @@ export default function App() {
         if (customRes.ok) {
           const customData = await customRes.json();
           if (customData && customData.fontFamily) {
-            setCustomization(customData);
-            saveCustomizationLocally(customData);
+            setCustomization(prev => {
+              const merged: AppCustomizationSettings = {
+                ...prev,
+                ...customData,
+                themeMode: customData.themeMode || prev.themeMode || 'light',
+                digitalSignage: {
+                  ...prev.digitalSignage,
+                  ...(customData.digitalSignage || {})
+                }
+              };
+              saveCustomizationLocally(merged);
+              return merged;
+            });
           }
         }
 
@@ -93,17 +140,21 @@ export default function App() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 2500); // 2.5s polling for multi-device sync
+    const interval = setInterval(fetchData, 2000); // 2s polling for fast station bumping
     return () => clearInterval(interval);
   }, []);
 
-  // Update browser URL query parameter when screen changes so users can bookmark/share
+  // Update browser URL query parameter when screen changes
   const handleSelectScreen = (screen: ScreenMode) => {
     setCurrentScreen(screen);
     if (typeof window !== 'undefined' && window.history) {
-      const url = new URL(window.location.href);
-      url.searchParams.set('screen', screen);
-      window.history.replaceState({}, '', url.toString());
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set('screen', screen);
+        window.history.replaceState({}, '', url.toString());
+      } catch {
+        // Silently skip if history modification is blocked in iframe
+      }
     }
   };
 
@@ -112,9 +163,8 @@ export default function App() {
     setOrders(prev => [order, ...prev]);
   };
 
-  // Order status update in KDS
+  // Order status update (e.g. from KDS or History)
   const handleUpdateOrderStatus = async (orderId: string, status: OrderStatus) => {
-    // Optimistic update
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status } : o));
 
     try {
@@ -122,6 +172,90 @@ export default function App() {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status })
+      });
+    } catch {}
+  };
+
+  // Bump station: Kitchen (hot food line)
+  // Kitchen bumps order off completely; food is marked ready for FOH; FOH shows green; FOH performs final bump
+  const handleBumpKitchen = async (orderId: string, unbump: boolean = false) => {
+    const now = new Date().toISOString();
+    setOrders(prev => prev.map(o => {
+      if (o.id === orderId) {
+        return {
+          ...o,
+          kitchenBumped: !unbump,
+          status: !unbump ? 'ready' : 'preparing',
+          preparedAt: !unbump ? now : undefined
+        };
+      }
+      return o;
+    }));
+
+    try {
+      const res = await fetch(`/api/orders/${orderId}/bump`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ station: 'kitchen', unbump })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.order) {
+          setOrders(prev => prev.map(o => o.id === orderId ? data.order : o));
+        }
+      }
+    } catch {}
+  };
+
+  // Bump station: Front of House (drinks & final handover)
+  const handleBumpFoh = async (orderId: string) => {
+    const now = new Date().toISOString();
+    setOrders(prev => prev.map(o => {
+      if (o.id === orderId) {
+        return {
+          ...o,
+          fohBumped: true,
+          status: 'completed',
+          completedAt: now
+        };
+      }
+      return o;
+    }));
+
+    try {
+      const res = await fetch(`/api/orders/${orderId}/bump`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ station: 'foh' })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.order) {
+          setOrders(prev => prev.map(o => o.id === orderId ? data.order : o));
+        }
+      }
+    } catch {}
+  };
+
+  // Refund Order (from Order History)
+  const handleRefundOrder = async (orderId: string) => {
+    const timestamp = new Date().toISOString();
+    setOrders(prev => prev.map(o => {
+      if (o.id === orderId) {
+        return {
+          ...o,
+          paymentStatus: 'refunded',
+          refundedAt: timestamp,
+          status: 'cancelled'
+        };
+      }
+      return o;
+    }));
+
+    try {
+      await fetch(`/api/orders/${orderId}/refund`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' }
       });
     } catch {}
   };
@@ -148,7 +282,6 @@ export default function App() {
   const handleToggleOut = async (id: string, isOut: boolean) => {
     setInventory(prev => prev.map(item => item.id === id ? { ...item, isOut } : item));
 
-    // If item is out, update related menu items if applicable
     try {
       await fetch(`/api/inventory/${id}`, {
         method: 'PATCH',
@@ -158,7 +291,7 @@ export default function App() {
     } catch {}
   };
 
-  // Menu items update from Studio or XLSX upload
+  // Menu items update from Studio
   const handleMenuUpdated = (items: MenuItem[]) => {
     setMenuItems(items);
   };
@@ -192,40 +325,40 @@ export default function App() {
   };
 
   // KPI counts
-  const activeOrdersCount = orders.filter(o => o.status === 'pending' || o.status === 'preparing').length;
+  const kitchenOrdersCount = orders.filter(o => !o.kitchenBumped && (o.status === 'pending' || o.status === 'preparing')).length;
+  const fohOrdersCount = orders.filter(o => o.status !== 'completed' && o.status !== 'cancelled').length;
   const lowStockCount = inventory.filter(i => i.currentStock <= i.minThreshold).length;
 
+  // TV & Customer display screens hide the main application navbar completely for genuine full-screen TV view
+  const isTvDisplayScreen = currentScreen === 'signage_menu' || currentScreen === 'order_status' || currentScreen === 'cfd';
+  const shouldRenderNavbar = !isTvDisplayScreen;
+
   return (
-    <div className="min-h-screen flex flex-col bg-[#FBFBFA] font-sans text-stone-900 selection:bg-amber-400 selection:text-stone-950">
-      {/* Top Application Navbar */}
-      <Navbar
-        currentScreen={currentScreen}
-        onSelectScreen={handleSelectScreen}
-        activeOrdersCount={activeOrdersCount}
-        lowStockCount={lowStockCount}
-        serverOnline={serverOnline}
-      />
+    <div className={`h-screen max-h-screen flex flex-col overflow-hidden font-sans select-none selection:bg-amber-400 selection:text-stone-950 ${
+      customization.themeMode === 'dark' ? 'dark bg-stone-950 text-stone-100' : 'bg-[#FBFBFA] text-stone-900'
+    }`}>
+      {/* Top Application Navbar (Suppressed on TV & Customer Screens) */}
+      {shouldRenderNavbar && (
+        <Navbar
+          currentScreen={currentScreen}
+          onSelectScreen={handleSelectScreen}
+          activeOrdersCount={kitchenOrdersCount}
+          fohOrdersCount={fohOrdersCount}
+          lowStockCount={lowStockCount}
+          serverOnline={serverOnline}
+          customization={customization}
+          onUpdateCustomization={handleUpdateCustomization}
+        />
+      )}
 
       {/* Main View Area */}
-      <main className="flex-1 flex flex-col overflow-hidden">
+      <main className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {currentScreen === 'pos' && (
           <PosRegister
             menuItems={menuItems}
             onOrderCreated={handleOrderCreated}
             customization={customization}
-            onOpenStudio={() => handleSelectScreen('studio')}
-          />
-        )}
-
-        {currentScreen === 'studio' && (
-          <MenuScreenStudio
-            menuItems={menuItems}
-            categories={customization.categoryOrder}
-            customization={customization}
-            onUpdateMenuItems={handleMenuUpdated}
-            onUpdateCustomization={handleUpdateCustomization}
-            onNavigateScreen={handleSelectScreen}
-            onResetDefaults={handleResetDefaults}
+            onOpenStudio={() => handleSelectScreen('admin')}
           />
         )}
 
@@ -233,6 +366,23 @@ export default function App() {
           <KitchenDisplayScreen
             orders={orders}
             onUpdateOrderStatus={handleUpdateOrderStatus}
+            onBumpKitchen={handleBumpKitchen}
+          />
+        )}
+
+        {currentScreen === 'foh' && (
+          <FrontOfHouseScreen
+            orders={orders}
+            onBumpFoh={handleBumpFoh}
+            onUpdateOrderStatus={handleUpdateOrderStatus}
+          />
+        )}
+
+        {currentScreen === 'order_history' && (
+          <OrderHistoryScreen
+            orders={orders}
+            customization={customization}
+            onRefundOrder={handleRefundOrder}
           />
         )}
 
@@ -240,33 +390,37 @@ export default function App() {
           <DigitalSignageMenu
             menuItems={menuItems}
             customization={customization}
-            onOpenStudio={() => handleSelectScreen('studio')}
+            standaloneTvMode={true}
+            onExit={() => handleSelectScreen('pos')}
           />
         )}
 
         {currentScreen === 'order_status' && (
           <OrderStatusBoard
             orders={orders}
+            standaloneTvMode={true}
+            onExit={() => handleSelectScreen('pos')}
           />
         )}
 
         {currentScreen === 'cfd' && (
-          <CustomerFacingDisplay />
-        )}
-
-        {currentScreen === 'inventory' && (
-          <InventoryManager
-            inventory={inventory}
-            onRestock={handleRestock}
-            onToggleOut={handleToggleOut}
+          <CustomerFacingDisplay
+            standaloneTvMode={true}
+            onExit={() => handleSelectScreen('pos')}
           />
         )}
 
-        {currentScreen === 'network_hub' && (
-          <NetworkHub
+        {currentScreen === 'admin' && (
+          <AdminHub
             menuItems={menuItems}
             onMenuUpdated={handleMenuUpdated}
+            inventory={inventory}
+            onRestock={handleRestock}
+            onToggleOut={handleToggleOut}
+            customization={customization}
+            onUpdateCustomization={handleUpdateCustomization}
             onNavigateScreen={handleSelectScreen}
+            onResetDefaults={handleResetDefaults}
           />
         )}
       </main>

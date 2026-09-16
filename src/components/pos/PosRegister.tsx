@@ -2,25 +2,28 @@ import React, { useState, useEffect } from 'react';
 import { 
   Search, 
   Plus, 
+  Minus,
   Trash2, 
   ShoppingBag, 
   Sparkles, 
   Utensils, 
-  Tag, 
-  Check, 
   ChevronRight, 
   Flame, 
   Leaf,
-  UtensilsCrossed,
   User,
   Hash,
-  Sliders,
-  X
+  X,
+  Percent,
+  MessageSquare,
+  ArrowRight,
+  SlidersHorizontal,
+  RotateCcw
 } from 'lucide-react';
 import { MenuItem, CartItem, OrderType, Order, AppCustomizationSettings } from '../../types';
 import { CustomOrderModal } from './CustomOrderModal';
 import { PaymentModal } from './PaymentModal';
 import { RoastupPotatoIcon } from '../brand/RoastupBrand';
+import { sound } from '../../utils/sound';
 
 interface PosRegisterProps {
   menuItems: MenuItem[];
@@ -35,21 +38,18 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
   customization,
   onOpenStudio
 }) => {
-  const categories = customization?.categoryOrder && customization.categoryOrder.length > 0
-    ? customization.categoryOrder
-    : [
-        'Loaded Roast Potatoes',
-        'Roti Roast Potato Wraps',
-        'Sides',
-        'Sauces & Dips',
-        'Meal Deals',
-        'Drinks',
-        'Build Your Own'
-      ];
+  // Dynamically compute categories from both customization and active menu items
+  const categories = Array.from(
+    new Set([
+      ...(customization?.categoryOrder && customization.categoryOrder.length > 0 ? customization.categoryOrder : []),
+      ...menuItems.map(i => i.category)
+    ])
+  ).filter(Boolean);
 
-  const [selectedCategory, setSelectedCategory] = useState<string>(categories[0] || 'Loaded Roast Potatoes');
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [dietaryFilter, setDietaryFilter] = useState<'all' | 'vegetarian' | 'spicy' | 'signature'>('all');
+  const [mobileView, setMobileView] = useState<'menu' | 'ticket'>('menu');
   
   // Customization modal state
   const [customizingItem, setCustomizingItem] = useState<MenuItem | null>(null);
@@ -59,26 +59,30 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
   const [orderType, setOrderType] = useState<OrderType>('takeaway');
   const [customerName, setCustomerName] = useState<string>('');
   const [tableNumber, setTableNumber] = useState<string>('');
+  const [orderNote, setOrderNote] = useState<string>('');
+  const [discountPercent, setDiscountPercent] = useState<number>(0);
+  const [showNoteInput, setShowNoteInput] = useState<boolean>(false);
   const [showPaymentModal, setShowPaymentModal] = useState<boolean>(false);
 
   // Sync cart to server for Customer-Facing Display (CFD)
   useEffect(() => {
-    const sub = cart.reduce((acc, i) => acc + i.totalPrice, 0);
-    const tax = Math.round((sub * 0.20 / 1.20) * 100) / 100;
+    const rawTotal = cart.reduce((acc, i) => acc + i.totalPrice, 0);
+    const discountedTotal = Math.max(0, rawTotal * (1 - discountPercent / 100));
+    const tax = Math.round((discountedTotal * 0.20 / 1.20) * 100) / 100;
     
     fetch('/api/orders/current-active', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         items: cart,
-        subtotal: sub - tax,
+        subtotal: discountedTotal - tax,
         tax,
-        total: sub,
+        total: discountedTotal,
         orderType,
-        customerGreeting: customerName ? `Hello ${customerName}!` : 'Welcome to ROASTUP!'
+        customerGreeting: customerName ? `Hello ${customerName}!` : 'Welcome to ROASTIES!'
       })
     }).catch(() => {});
-  }, [cart, orderType, customerName]);
+  }, [cart, orderType, customerName, discountPercent]);
 
   // Filter items
   const filteredItems = menuItems.filter(item => {
@@ -98,67 +102,153 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
     return matchCat && matchSearch && matchDiet;
   });
 
-  // Cart actions
-  const handleAddToCart = (item: CartItem) => {
-    setCart(prev => [...prev, item]);
-  };
+  // Fast tap handler: if item has no modifiers and only 1 variation, add straight away!
+  const handleItemClick = (item: MenuItem) => {
+    const hasModifiers = item.modifierSets && item.modifierSets.length > 0;
+    const hasMultipleVariations = item.variations && item.variations.length > 1;
 
-  const handleUpdateQuantity = (cartItemId: string, delta: number) => {
-    setCart(prev => {
-      return prev.map(item => {
-        if (item.cartItemId === cartItemId) {
-          const newQ = Math.max(0, item.quantity + delta);
-          return {
-            ...item,
-            quantity: newQ,
-            totalPrice: newQ * item.unitPrice
+    if (!hasModifiers && !hasMultipleVariations) {
+      // Direct quick-add (e.g. drinks, sides, sauces)
+      const standardVar = item.variations[0] || { id: 'std', name: 'Standard', sku: 'ROAST-STD', price: item.defaultPrice };
+      const cartItemId = `${item.id}-${standardVar.id}-${Date.now()}`;
+      
+      const newItem: CartItem = {
+        cartItemId,
+        menuItemId: item.id,
+        name: item.name,
+        category: item.category,
+        variation: standardVar,
+        quantity: 1,
+        unitPrice: standardVar.price,
+        totalPrice: standardVar.price,
+        selectedModifiers: [],
+        specialRemovals: [],
+        specialAdditions: []
+      };
+
+      setCart(prev => {
+        // If same basic item already in cart without customizations, increment quantity
+        const existingIdx = prev.findIndex(c => 
+          c.menuItemId === item.id && 
+          c.variation.id === standardVar.id && 
+          (!c.specialRemovals || c.specialRemovals.length === 0) &&
+          (!c.specialAdditions || c.specialAdditions.length === 0) &&
+          (!c.selectedModifiers || c.selectedModifiers.length === 0)
+        );
+
+        if (existingIdx >= 0) {
+          const updated = [...prev];
+          const curr = updated[existingIdx];
+          const newQty = curr.quantity + 1;
+          updated[existingIdx] = {
+            ...curr,
+            quantity: newQty,
+            totalPrice: Math.round(newQty * curr.unitPrice * 100) / 100
           };
+          return updated;
         }
-        return item;
-      }).filter(item => item.quantity > 0);
-    });
-  };
+        return [...prev, newItem];
+      });
 
-  const handleRemoveCartItem = (cartItemId: string) => {
-    setCart(prev => prev.filter(i => i.cartItemId !== cartItemId));
-  };
-
-  const handleClearCart = () => {
-    if (cart.length > 0 && confirm('Clear current order?')) {
-      setCart([]);
-      setCustomerName('');
-      setTableNumber('');
+      sound.playRegisterDing();
+    } else {
+      // Needs modal customization
+      setCustomizingItem(item);
     }
   };
 
-  // Totals
-  const rawTotal = cart.reduce((acc, item) => acc + item.totalPrice, 0);
-  const tax = Math.round((rawTotal * 0.20 / 1.20) * 100) / 100;
-  const subtotal = rawTotal - tax;
-  const grandTotal = rawTotal;
+  // Add customized item from modal
+  const handleAddCustomizedItem = (customizedItem: CartItem) => {
+    setCart(prev => [...prev, customizedItem]);
+    setCustomizingItem(null);
+    sound.playRegisterDing();
+  };
+
+  // Stepper adjustments
+  const updateItemQuantity = (cartItemId: string, delta: number) => {
+    setCart(prev => {
+      return prev.map(item => {
+        if (item.cartItemId === cartItemId) {
+          const newQty = item.quantity + delta;
+          if (newQty <= 0) return null;
+          const singleItemCost = item.totalPrice / item.quantity;
+          return {
+            ...item,
+            quantity: newQty,
+            totalPrice: Math.round(newQty * singleItemCost * 100) / 100
+          };
+        }
+        return item;
+      }).filter(Boolean) as CartItem[];
+    });
+  };
+
+  const removeItem = (cartItemId: string) => {
+    setCart(prev => prev.filter(i => i.cartItemId !== cartItemId));
+  };
+
+  const clearCart = () => {
+    setCart([]);
+    setDiscountPercent(0);
+    setOrderNote('');
+  };
+
+  // Calculations
+  const rawSubtotal = cart.reduce((acc, i) => acc + i.totalPrice, 0);
+  const discountAmount = Math.round(rawSubtotal * (discountPercent / 100) * 100) / 100;
+  const grandTotal = Math.max(0, rawSubtotal - discountAmount);
+  const taxAmount = Math.round((grandTotal * 0.20 / 1.20) * 100) / 100;
+  const netSubtotal = Math.round((grandTotal - taxAmount) * 100) / 100;
 
   return (
-    <div className={`flex-1 flex flex-col lg:flex-row overflow-hidden bg-[#FBFBFA] text-stone-900 font-style-${customization?.fontFamily || 'sans'} scale-${customization?.fontSizeScale || 'normal'}`}>
-      {/* LEFT / CENTER: MENU CATALOG */}
-      <div className="flex-1 flex flex-col overflow-hidden border-r border-stone-200">
-        {/* Unified Top Controls: Category Tabs & Search/Dietary bar */}
-        <div className="bg-white border-b border-stone-200 shadow-2xs">
-          {/* Upper control row: Search, Dietary Filters, and Studio Link */}
-          <div className="px-4 py-2.5 flex flex-col sm:flex-row gap-2.5 items-center justify-between border-b border-stone-100">
-            {/* Search bar */}
-            <div className="relative w-full sm:w-80">
-              <Search className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
+    <div className="flex-1 min-h-0 flex flex-col bg-[#FBFBFA] dark:bg-stone-950 text-stone-900 dark:text-stone-100 overflow-hidden font-sans">
+      {/* Mobile Screen Segmented Switcher (Only visible on screens under 768px) */}
+      <div className="md:hidden flex items-center bg-stone-100 dark:bg-stone-900 border-b border-stone-200 dark:border-stone-800 p-2 gap-2 shrink-0">
+        <button
+          onClick={() => setMobileView('menu')}
+          className={`flex-1 py-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+            mobileView === 'menu'
+              ? 'bg-white dark:bg-stone-800 text-stone-950 dark:text-white shadow-xs'
+              : 'text-stone-500 hover:text-stone-900'
+          }`}
+        >
+          <Utensils className="w-3.5 h-3.5" />
+          <span>Menu Catalog ({filteredItems.length})</span>
+        </button>
+        <button
+          onClick={() => setMobileView('ticket')}
+          className={`flex-1 py-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+            mobileView === 'ticket'
+              ? 'bg-amber-400 text-stone-950 shadow-xs'
+              : 'bg-stone-200/70 dark:bg-stone-800 text-stone-700 dark:text-stone-300'
+          }`}
+        >
+          <ShoppingBag className="w-3.5 h-3.5" />
+          <span>Ticket ({cart.length}) • £{grandTotal.toFixed(2)}</span>
+        </button>
+      </div>
+
+      {/* Main Split Layout: Side-by-side on all screens >= md (768px+), or active mobile tab */}
+      <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
+        {/* LEFT / CENTER: MENU CATALOG */}
+        <div className={`${mobileView === 'menu' ? 'flex' : 'hidden'} md:flex flex-1 min-h-0 flex-col min-w-0 overflow-hidden border-r border-stone-200 dark:border-stone-800`}>
+          {/* Top Controls Bar: Search & Category Navigation */}
+          <div className="p-4 bg-white dark:bg-stone-900 border-b border-stone-200 dark:border-stone-800 flex flex-col gap-3 shadow-2xs">
+          {/* Search and Fast Filters */}
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-stone-400" />
               <input
                 type="text"
+                placeholder="Search crispy potatoes, roti wraps, sides..."
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Search roast potatoes, wraps, dips..."
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl pl-9 pr-8 py-1.5 text-xs text-stone-900 placeholder-stone-400 focus:outline-hidden focus:border-amber-400 focus:bg-white transition-colors"
+                className="w-full pl-10 pr-9 py-2.5 bg-stone-100 dark:bg-stone-800 border-none rounded-2xl text-xs font-semibold placeholder:text-stone-400 focus:outline-hidden focus:ring-2 focus:ring-amber-400 dark:text-white"
               />
               {searchQuery && (
                 <button 
                   onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700 p-0.5"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -166,85 +256,54 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
             </div>
 
             {/* Dietary quick filter chips */}
-            <div className="flex items-center gap-1.5 w-full sm:w-auto overflow-x-auto scrollbar-none">
-              <button
-                onClick={() => setDietaryFilter('all')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-                  dietaryFilter === 'all'
-                    ? 'bg-stone-900 text-amber-400 shadow-2xs font-extrabold'
-                    : 'bg-stone-100 text-stone-600 hover:text-stone-900 hover:bg-stone-200'
-                }`}
-              >
-                All
-              </button>
-              <button
-                onClick={() => setDietaryFilter('vegetarian')}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-                  dietaryFilter === 'vegetarian'
-                    ? 'bg-emerald-600 text-white shadow-2xs font-extrabold'
-                    : 'bg-stone-100 text-stone-600 hover:text-emerald-700 hover:bg-emerald-50'
-                }`}
-              >
-                <Leaf className="w-3.5 h-3.5" />
-                <span>Veg</span>
-              </button>
-              <button
-                onClick={() => setDietaryFilter('spicy')}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-                  dietaryFilter === 'spicy'
-                    ? 'bg-rose-600 text-white shadow-2xs font-extrabold'
-                    : 'bg-stone-100 text-stone-600 hover:text-rose-700 hover:bg-rose-50'
-                }`}
-              >
-                <Flame className="w-3.5 h-3.5" />
-                <span>Spicy</span>
-              </button>
-              <button
-                onClick={() => setDietaryFilter('signature')}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-                  dietaryFilter === 'signature'
-                    ? 'bg-amber-400 text-stone-950 shadow-2xs font-extrabold'
-                    : 'bg-stone-100 text-stone-600 hover:text-amber-800 hover:bg-amber-50'
-                }`}
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Signatures</span>
-              </button>
-
-              {onOpenStudio && (
+            <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
+              {[
+                { id: 'all', label: 'All Items' },
+                { id: 'signature', label: '★ Signature' },
+                { id: 'vegetarian', label: '🌱 Veg' },
+                { id: 'spicy', label: '🌶️ Spicy' }
+              ].map(d => (
                 <button
-                  onClick={onOpenStudio}
-                  className="ml-auto sm:ml-2 flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-200 shrink-0 transition-colors"
-                  title="Customize dishes and categories"
+                  key={d.id}
+                  onClick={() => setDietaryFilter(d.id as any)}
+                  className={`px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                    dietaryFilter === d.id
+                      ? 'bg-amber-400 text-stone-950 shadow-xs'
+                      : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-stone-200'
+                  }`}
                 >
-                  <Sliders className="w-3.5 h-3.5 text-amber-700" />
-                  <span className="hidden sm:inline">Edit Menu</span>
+                  {d.label}
                 </button>
-              )}
+              ))}
             </div>
           </div>
 
-          {/* Lower row: Category scroll pills */}
-          <div className="px-4 py-2 flex items-center gap-1.5 overflow-x-auto scrollbar-none bg-stone-50/50">
+          {/* Horizontal Category Selector Pills */}
+          <div className="flex items-center gap-2 overflow-x-auto scrollbar-none pb-0.5">
+            <button
+              onClick={() => setSelectedCategory('all')}
+              className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer shrink-0 ${
+                selectedCategory === 'all'
+                  ? 'bg-stone-900 dark:bg-white text-white dark:text-stone-950 shadow-2xs'
+                  : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-stone-200'
+              }`}
+            >
+              All Items ({menuItems.length})
+            </button>
             {categories.map(cat => {
-              const isSelected = selectedCategory === cat;
-              const countInCat = menuItems.filter(i => i.category === cat).length;
+              const count = menuItems.filter(i => i.category === cat).length;
               return (
                 <button
                   key={cat}
                   onClick={() => setSelectedCategory(cat)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
-                    isSelected
-                      ? 'bg-amber-400 text-stone-950 shadow-xs font-black'
-                      : 'bg-white text-stone-600 hover:text-stone-950 hover:bg-stone-100 border border-stone-200/80'
+                  className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer shrink-0 flex items-center gap-1.5 ${
+                    selectedCategory === cat
+                      ? 'bg-amber-400 text-stone-950 shadow-2xs'
+                      : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-stone-200'
                   }`}
                 >
                   <span>{cat}</span>
-                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                    isSelected ? 'bg-stone-950 text-amber-400 font-black' : 'bg-stone-100 text-stone-500'
-                  }`}>
-                    {countInCat}
-                  </span>
+                  <span className="text-[10px] opacity-70 font-mono">({count})</span>
                 </button>
               );
             })}
@@ -252,12 +311,12 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
         </div>
 
         {/* Menu Items Grid */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-5">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
           {filteredItems.length === 0 ? (
             <div className="h-64 flex flex-col items-center justify-center text-center text-stone-400">
               <Utensils className="w-10 h-10 mb-2 opacity-30 text-stone-400" />
-              <p className="font-semibold text-sm text-stone-700">No items found</p>
-              <p className="text-xs text-stone-500 mt-1">Try adjusting your search query or dietary filters</p>
+              <p className="font-bold text-sm text-stone-700 dark:text-stone-300">No menu items match your search</p>
+              <p className="text-xs text-stone-500 mt-1">Try clearing filters or selecting another category</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -268,73 +327,76 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
                   ? `£${minPrice.toFixed(2)} - £${maxPrice.toFixed(2)}`
                   : `£${item.defaultPrice.toFixed(2)}`;
 
+                const hasModifiers = item.modifierSets && item.modifierSets.length > 0;
+                const hasMultipleVariations = item.variations && item.variations.length > 1;
+
                 return (
                   <div
                     key={item.id}
-                    onClick={() => setCustomizingItem(item)}
-                    className="group relative bg-white hover:bg-stone-50/90 border border-stone-200 hover:border-amber-400 rounded-2xl overflow-hidden flex flex-col justify-between cursor-pointer transition-all shadow-2xs hover:shadow-md select-none"
+                    onClick={() => handleItemClick(item)}
+                    className="group bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 hover:border-amber-400 dark:hover:border-amber-400 rounded-3xl overflow-hidden flex flex-col justify-between cursor-pointer transition-all shadow-xs hover:shadow-md select-none relative"
                   >
                     {/* Visual Banner Header */}
-                    <div className="h-32 w-full bg-stone-100 relative overflow-hidden shrink-0 border-b border-stone-100">
+                    <div className="h-32 w-full bg-stone-100 dark:bg-stone-800 relative overflow-hidden shrink-0 border-b border-stone-100 dark:border-stone-800">
                       {item.imageUrl ? (
                         <img
                           src={item.imageUrl}
                           alt={item.name}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                          onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
+                          referrerPolicy="no-referrer"
                         />
                       ) : (
-                        <div className="w-full h-full bg-gradient-to-br from-amber-50 via-stone-100 to-amber-100/60 flex items-center justify-center">
+                        <div className="w-full h-full bg-gradient-to-br from-amber-50 dark:from-stone-800 via-stone-100 dark:via-stone-900 to-amber-100/60 flex items-center justify-center">
                           <RoastupPotatoIcon size="md" className="opacity-40 group-hover:scale-110 transition-transform" />
                         </div>
                       )}
 
                       {/* Price Badge Overlay */}
-                      <div className="absolute top-2.5 right-2.5 bg-white/95 backdrop-blur-xs font-black text-xs text-stone-950 px-2.5 py-1 rounded-xl shadow-xs border border-stone-200/80">
+                      <div className="absolute top-2.5 right-2.5 bg-white/95 dark:bg-stone-900/95 backdrop-blur-xs font-black text-xs text-stone-950 dark:text-white px-2.5 py-1 rounded-xl shadow-xs border border-stone-200 dark:border-stone-700 font-mono">
                         {priceLabel}
                       </div>
 
                       {/* Dietary Badges Overlay */}
                       <div className="absolute top-2.5 left-2.5 flex flex-wrap gap-1">
                         {item.tags?.includes('signature') && (
-                          <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-lg bg-amber-400 text-stone-950 shadow-2xs">
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-amber-400 text-stone-950 shadow-2xs">
                             ★ Signature
                           </span>
                         )}
                         {item.tags?.includes('spicy') && (
-                          <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-lg bg-rose-600 text-white shadow-2xs">
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-rose-600 text-white shadow-2xs">
                             🌶️ Spicy
                           </span>
                         )}
                         {item.tags?.includes('vegetarian') && (
-                          <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-lg bg-emerald-600 text-white shadow-2xs">
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-emerald-600 text-white shadow-2xs">
                             🌱 Veg
                           </span>
                         )}
                       </div>
                     </div>
 
-                    {/* Card Content Body */}
-                    <div className="p-3.5 flex-1 flex flex-col justify-between">
+                    {/* Card Body */}
+                    <div className="p-4 flex-1 flex flex-col justify-between">
                       <div>
-                        <h4 className="font-extrabold text-sm text-stone-900 group-hover:text-amber-800 transition-colors line-clamp-1">
+                        <h4 className="font-black text-sm text-stone-900 dark:text-white group-hover:text-amber-600 dark:group-hover:text-amber-400 transition-colors line-clamp-1">
                           {item.name}
                         </h4>
-                        <p className="text-xs text-stone-500 mt-1 line-clamp-2 leading-relaxed h-8">
+                        <p className="text-xs text-stone-500 dark:text-stone-400 mt-1 line-clamp-2 leading-relaxed h-8">
                           {item.description}
                         </p>
                       </div>
 
-                      {/* Variations / Action Footer */}
-                      <div className="mt-3 pt-2.5 border-t border-stone-100 flex items-center justify-between text-xs">
-                        <span className="text-[11px] font-medium text-stone-400 truncate max-w-[150px]">
-                          {item.variations.length > 1 
-                            ? item.variations.map(v => v.name).join(' • ')
-                            : 'Standard Portion'}
+                      {/* Action footer */}
+                      <div className="mt-3 pt-2.5 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between text-xs">
+                        <span className="text-[11px] font-medium text-stone-400 truncate max-w-[140px]">
+                          {hasMultipleVariations 
+                            ? `${item.variations.length} sizes`
+                            : 'Standard'}
                         </span>
 
                         <div className="flex items-center gap-1 bg-amber-400 group-hover:bg-amber-500 text-stone-950 font-black text-xs px-2.5 py-1 rounded-xl transition-colors shadow-2xs">
-                          <span>Customize</span>
+                          <span>{hasModifiers || hasMultipleVariations ? 'Options' : '+ Add'}</span>
                           <ChevronRight className="w-3.5 h-3.5" />
                         </div>
                       </div>
@@ -347,233 +409,275 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
         </div>
       </div>
 
-      {/* RIGHT: ACTIVE ORDER / CART SIDEBAR */}
-      <div className="w-full lg:w-96 bg-white flex flex-col border-t lg:border-t-0 border-stone-200 shadow-xs">
-        {/* Cart Header */}
-        <div className="p-3.5 border-b border-stone-200 bg-white flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="p-1.5 rounded-lg bg-amber-100 text-amber-900">
-              <ShoppingBag className="w-4 h-4" />
-            </div>
-            <div>
-              <span className="font-extrabold text-sm text-stone-900">Current Ticket</span>
-              <span className="text-xs text-stone-400 font-semibold ml-1.5">
-                ({cart.reduce((s, i) => s + i.quantity, 0)} items)
+      {/* RIGHT: VITA MOJO INSPIRED LIVE TICKET TAPE */}
+      <div className={`${mobileView === 'ticket' ? 'flex' : 'hidden'} md:flex w-full md:w-80 lg:w-96 shrink-0 h-full bg-white dark:bg-stone-900 flex-col border-stone-200 dark:border-stone-800 shadow-xs`}>
+        {/* Ticket Header & Order Type Segmented Switch */}
+        <div className="p-4 border-b border-stone-200 dark:border-stone-800 space-y-3 bg-stone-50/50 dark:bg-stone-900">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ShoppingBag className="w-4 h-4 text-amber-500" />
+              <span className="font-black text-sm text-stone-900 dark:text-white uppercase tracking-wider">
+                Current Ticket
               </span>
             </div>
+            {cart.length > 0 && (
+              <button
+                onClick={clearCart}
+                className="text-stone-400 hover:text-rose-600 text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                title="Clear Ticket"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Clear</span>
+              </button>
+            )}
           </div>
 
-          {cart.length > 0 && (
+          {/* Dining Mode Toggle (Takeaway vs Dine In) */}
+          <div className="grid grid-cols-2 p-1 bg-stone-200/70 dark:bg-stone-800 rounded-2xl">
             <button
-              onClick={handleClearCart}
-              className="text-xs text-rose-600 hover:text-rose-700 font-bold flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-rose-50 transition-colors"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Clear</span>
-            </button>
-          )}
-        </div>
-
-        {/* Order Details: Dine In / Takeaway, Customer Name */}
-        <div className="p-3 border-b border-stone-200 bg-stone-50/70 space-y-2.5">
-          {/* Clean Segmented Toggle */}
-          <div className="grid grid-cols-2 gap-1.5 bg-stone-200/60 p-1 rounded-xl">
-            <button
-              type="button"
               onClick={() => setOrderType('takeaway')}
-              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+              className={`py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
                 orderType === 'takeaway'
-                  ? 'bg-amber-400 text-stone-950 shadow-xs font-black'
-                  : 'text-stone-600 hover:text-stone-950'
+                  ? 'bg-white dark:bg-stone-900 text-stone-950 dark:text-white shadow-xs'
+                  : 'text-stone-600 dark:text-stone-400'
               }`}
             >
-              <ShoppingBag className="w-3.5 h-3.5" />
-              <span>Takeaway Box</span>
+              🛍️ Takeaway Box
             </button>
             <button
-              type="button"
               onClick={() => setOrderType('dine_in')}
-              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+              className={`py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
                 orderType === 'dine_in'
-                  ? 'bg-amber-400 text-stone-950 shadow-xs font-black'
-                  : 'text-stone-600 hover:text-stone-950'
+                  ? 'bg-white dark:bg-stone-900 text-stone-950 dark:text-white shadow-xs'
+                  : 'text-stone-600 dark:text-stone-400'
               }`}
             >
-              <UtensilsCrossed className="w-3.5 h-3.5" />
-              <span>Dine In Bowl</span>
+              🍽️ Dine In Tray
             </button>
           </div>
 
-          {/* Customer & Table Inputs with Icons */}
+          {/* Customer / Table Details */}
           <div className="grid grid-cols-2 gap-2">
             <div className="relative">
-              <User className="w-3.5 h-3.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <User className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
               <input
                 type="text"
-                placeholder="Customer Name"
+                placeholder="Guest Name"
                 value={customerName}
                 onChange={e => setCustomerName(e.target.value)}
-                className="w-full bg-white border border-stone-200 rounded-xl pl-8 pr-2.5 py-1.5 text-xs text-stone-900 placeholder-stone-400 focus:outline-hidden focus:border-amber-400 transition-colors"
+                className="w-full pl-8 pr-3 py-1.5 bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl text-xs font-semibold text-stone-900 dark:text-white focus:outline-hidden focus:border-amber-400"
               />
             </div>
-            <div className="relative">
-              <Hash className="w-3.5 h-3.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Table / Buzzer"
-                value={tableNumber}
-                onChange={e => setTableNumber(e.target.value)}
-                className="w-full bg-white border border-stone-200 rounded-xl pl-8 pr-2.5 py-1.5 text-xs text-stone-900 placeholder-stone-400 focus:outline-hidden focus:border-amber-400 transition-colors"
-              />
-            </div>
+            {orderType === 'dine_in' ? (
+              <div className="relative">
+                <Hash className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+                <input
+                  type="text"
+                  placeholder="Table #"
+                  value={tableNumber}
+                  onChange={e => setTableNumber(e.target.value)}
+                  className="w-full pl-8 pr-3 py-1.5 bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl text-xs font-semibold text-stone-900 dark:text-white focus:outline-hidden focus:border-amber-400"
+                />
+              </div>
+            ) : (
+              <div className="text-right flex items-center justify-end px-2 text-[11px] font-bold text-stone-400">
+                Collection # Auto
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Cart Items List */}
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {/* Ticket Items List */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
           {cart.length === 0 ? (
-            <div className="h-48 flex flex-col items-center justify-center text-center text-stone-400">
-              <ShoppingBag className="w-8 h-8 mb-2 opacity-30 text-stone-400" />
-              <p className="font-semibold text-xs text-stone-700">Order is empty</p>
-              <p className="text-[11px] text-stone-400 mt-0.5">Select items to add to current order</p>
+            <div className="h-64 flex flex-col items-center justify-center text-center text-stone-400 space-y-2">
+              <ShoppingBag className="w-8 h-8 opacity-30 text-stone-400" />
+              <p className="font-bold text-xs text-stone-600 dark:text-stone-400">Ticket is empty</p>
+              <p className="text-[11px] text-stone-400">Tap menu items on the left to add</p>
             </div>
           ) : (
             cart.map(item => (
               <div 
-                key={item.cartItemId} 
-                className="bg-stone-50/80 border border-stone-200/80 rounded-xl p-2.5 transition-all"
+                key={item.cartItemId}
+                className="p-3 bg-stone-50 dark:bg-stone-800/60 rounded-2xl border border-stone-200/80 dark:border-stone-700/80 space-y-2"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <span className="font-extrabold text-xs text-stone-900 truncate">{item.name}</span>
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 font-bold border border-amber-200 shrink-0">
+                      <span className="font-black text-xs text-stone-900 dark:text-white truncate">
+                        {item.name}
+                      </span>
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950 text-amber-900 dark:text-amber-200 border border-amber-200 dark:border-amber-800 shrink-0">
                         {item.variation.name}
                       </span>
                     </div>
 
-                    {/* Modifiers & additions */}
-                    {((item.selectedModifiers && item.selectedModifiers.length > 0) || 
-                      (item.specialRemovals && item.specialRemovals.length > 0) || 
-                      (item.specialAdditions && item.specialAdditions.length > 0)) && (
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {item.specialRemovals?.map(r => (
-                          <span key={r} className="text-[10px] text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.2 rounded font-semibold">
-                            NO {r}
-                          </span>
-                        ))}
-                        {item.selectedModifiers?.map(m => (
-                          <span key={m.optionId} className="text-[10px] text-stone-700 bg-white border border-stone-200 px-1.5 py-0.2 rounded">
-                            +{m.optionName} {m.priceDelta > 0 ? `(£${m.priceDelta.toFixed(2)})` : ''}
-                          </span>
-                        ))}
-                        {item.specialAdditions?.map(a => (
-                          <span key={a} className="text-[10px] text-amber-900 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded font-semibold">
-                            +{a}
-                          </span>
-                        ))}
-                      </div>
+                    {/* Customizer Notes / Modifiers */}
+                    {item.specialRemovals && item.specialRemovals.length > 0 && (
+                      <p className="text-[10px] font-bold text-rose-600 mt-0.5">
+                        NO: {item.specialRemovals.join(', ')}
+                      </p>
                     )}
-
-                    {item.customNotes && (
-                      <p className="text-[10px] text-amber-700 italic mt-1 bg-amber-50/60 px-1.5 py-0.5 rounded border border-amber-200/60">
-                        &ldquo;{item.customNotes}&rdquo;
+                    {item.specialAdditions && item.specialAdditions.length > 0 && (
+                      <p className="text-[10px] font-bold text-emerald-600 mt-0.5">
+                        EXTRA: {item.specialAdditions.join(', ')}
+                      </p>
+                    )}
+                    {item.selectedModifiers && item.selectedModifiers.length > 0 && (
+                      <p className="text-[10px] text-stone-500 dark:text-stone-400 mt-0.5">
+                        {item.selectedModifiers.map(m => `+ ${m.optionName}`).join(', ')}
                       </p>
                     )}
                   </div>
 
-                  <span className="font-black text-xs text-stone-900 shrink-0">
+                  <span className="font-black font-mono text-xs text-stone-900 dark:text-white shrink-0">
                     £{item.totalPrice.toFixed(2)}
                   </span>
                 </div>
 
-                {/* Quantity Controls */}
-                <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-stone-200/60">
-                  <span className="text-[10px] font-semibold text-stone-400">
-                    £{item.unitPrice.toFixed(2)} each
-                  </span>
-                  
-                  <div className="flex items-center gap-1.5 bg-white border border-stone-200 rounded-lg p-0.5 shadow-2xs">
+                {/* Stepper & Line Delete */}
+                <div className="flex items-center justify-between pt-1 border-t border-stone-200/60 dark:border-stone-700/60 text-xs">
+                  <div className="flex items-center gap-2">
                     <button
-                      type="button"
-                      onClick={() => handleUpdateQuantity(item.cartItemId, -1)}
-                      className="p-1 rounded-md text-stone-500 hover:text-stone-900 hover:bg-stone-100"
+                      onClick={() => updateItemQuantity(item.cartItemId, -1)}
+                      className="w-6 h-6 rounded-lg bg-white dark:bg-stone-700 border border-stone-200 dark:border-stone-600 flex items-center justify-center font-bold hover:bg-stone-100 cursor-pointer"
                     >
-                      <Trash2 className="w-3 h-3" />
+                      <Minus className="w-3 h-3" />
                     </button>
-                    <span className="w-5 text-center text-xs font-bold text-stone-900">
-                      {item.quantity}
-                    </span>
+                    <span className="font-black font-mono w-4 text-center">{item.quantity}</span>
                     <button
-                      type="button"
-                      onClick={() => handleUpdateQuantity(item.cartItemId, 1)}
-                      className="p-1 rounded-md text-stone-500 hover:text-stone-900 hover:bg-stone-100"
+                      onClick={() => updateItemQuantity(item.cartItemId, 1)}
+                      className="w-6 h-6 rounded-lg bg-white dark:bg-stone-700 border border-stone-200 dark:border-stone-600 flex items-center justify-center font-bold hover:bg-stone-100 cursor-pointer"
                     >
                       <Plus className="w-3 h-3" />
                     </button>
                   </div>
+
+                  <button
+                    onClick={() => removeItem(item.cartItemId)}
+                    className="text-stone-400 hover:text-rose-600 transition-colors cursor-pointer"
+                    title="Remove item"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
             ))
           )}
         </div>
 
-        {/* Totals and Checkout CTA */}
-        <div className="p-4 border-t border-stone-200 bg-white space-y-3">
-          <div className="space-y-1.5 text-xs text-stone-500 bg-stone-50 p-3 rounded-xl border border-stone-100">
+        {/* Fast Action Buttons: Discount & Note */}
+        {cart.length > 0 && (
+          <div className="px-4 py-2 bg-stone-50 dark:bg-stone-800/40 border-t border-stone-200 dark:border-stone-800 flex items-center gap-2">
+            <button
+              onClick={() => setDiscountPercent(prev => prev === 0 ? 10 : prev === 10 ? 20 : 0)}
+              className={`flex-1 py-1.5 px-2 rounded-xl text-[11px] font-bold border flex items-center justify-center gap-1 cursor-pointer transition-colors ${
+                discountPercent > 0 
+                  ? 'bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-950 dark:text-amber-200' 
+                  : 'bg-white dark:bg-stone-800 text-stone-600 dark:text-stone-300 border-stone-200 dark:border-stone-700'
+              }`}
+            >
+              <Percent className="w-3 h-3" />
+              <span>{discountPercent > 0 ? `${discountPercent}% Off` : 'Discount'}</span>
+            </button>
+
+            <button
+              onClick={() => setShowNoteInput(!showNoteInput)}
+              className={`flex-1 py-1.5 px-2 rounded-xl text-[11px] font-bold border flex items-center justify-center gap-1 cursor-pointer transition-colors ${
+                orderNote 
+                  ? 'bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-950 dark:text-amber-200' 
+                  : 'bg-white dark:bg-stone-800 text-stone-600 dark:text-stone-300 border-stone-200 dark:border-stone-700'
+              }`}
+            >
+              <MessageSquare className="w-3 h-3" />
+              <span>{orderNote ? 'Note Added' : 'Kitchen Note'}</span>
+            </button>
+          </div>
+        )}
+
+        {/* Note Input dropdown if opened */}
+        {showNoteInput && (
+          <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border-t border-amber-200 dark:border-amber-800 flex items-center gap-2">
+            <input
+              type="text"
+              placeholder="e.g. Allergies: Celiac, Extra cutlery, Box separate"
+              value={orderNote}
+              onChange={e => setOrderNote(e.target.value)}
+              className="flex-1 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl px-3 py-1.5 text-xs text-stone-900 dark:text-white"
+            />
+            <button
+              onClick={() => setShowNoteInput(false)}
+              className="px-2.5 py-1.5 rounded-xl bg-amber-400 text-stone-950 text-xs font-bold cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
+        )}
+
+        {/* Totals & Charge Button */}
+        <div className="p-4 border-t border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 space-y-3">
+          <div className="space-y-1.5 text-xs text-stone-500 dark:text-stone-400">
             <div className="flex justify-between">
-              <span>Subtotal (Net)</span>
-              <span className="text-stone-800 font-semibold">£{subtotal.toFixed(2)}</span>
+              <span>Subtotal (Net):</span>
+              <span className="font-mono">£{netSubtotal.toFixed(2)}</span>
             </div>
             <div className="flex justify-between">
-              <span>VAT (20% included)</span>
-              <span className="text-stone-800 font-semibold">£{tax.toFixed(2)}</span>
+              <span>VAT (20%):</span>
+              <span className="font-mono">£{taxAmount.toFixed(2)}</span>
             </div>
-            <div className="flex justify-between text-sm font-black text-stone-900 pt-1.5 border-t border-stone-200">
-              <span>Total Due</span>
-              <span className="text-amber-600 text-base font-black">£{grandTotal.toFixed(2)}</span>
+            {discountPercent > 0 && (
+              <div className="flex justify-between text-amber-600 dark:text-amber-400 font-bold">
+                <span>Discount ({discountPercent}%):</span>
+                <span className="font-mono">-£{discountAmount.toFixed(2)}</span>
+              </div>
+            )}
+            <div className="flex justify-between text-base font-black text-stone-900 dark:text-white pt-2 border-t border-stone-200 dark:border-stone-800">
+              <span>Total Due:</span>
+              <span className="font-mono text-xl text-stone-900 dark:text-white">£{grandTotal.toFixed(2)}</span>
             </div>
           </div>
 
           <button
-            id="pos-pay-now-btn"
             disabled={cart.length === 0}
             onClick={() => setShowPaymentModal(true)}
-            className="w-full py-3 px-4 rounded-xl bg-amber-400 hover:bg-amber-500 disabled:opacity-40 disabled:hover:bg-amber-400 text-stone-950 font-black text-sm shadow-xs transition-all flex items-center justify-between cursor-pointer active:scale-[0.99]"
+            className="w-full py-3.5 rounded-2xl bg-amber-400 hover:bg-amber-500 disabled:opacity-40 text-stone-950 font-black text-sm transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer"
           >
-            <span>Process Payment</span>
-            <span className="bg-stone-950/10 px-2 py-0.5 rounded-lg font-mono text-xs">
-              £{grandTotal.toFixed(2)}
-            </span>
+            <span>Charge £{grandTotal.toFixed(2)}</span>
+            <ArrowRight className="w-4 h-4" />
           </button>
         </div>
       </div>
+      </div>
 
-      {/* CUSTOM TOPPING / MODIFIER MODAL */}
+      {/* Customization Modal */}
       {customizingItem && (
         <CustomOrderModal
           item={customizingItem}
           onClose={() => setCustomizingItem(null)}
-          onAddToCart={handleAddToCart}
+          onAddToCart={handleAddCustomizedItem}
         />
       )}
 
-      {/* PAYMENT & CARD CHECKOUT MODAL */}
+      {/* Payment Checkout Modal */}
       {showPaymentModal && (
         <PaymentModal
           items={cart}
-          subtotal={subtotal}
-          tax={tax}
+          subtotal={netSubtotal}
+          tax={taxAmount}
           total={grandTotal}
           orderType={orderType}
           customerName={customerName}
           tableNumber={tableNumber}
+          customization={customization}
           onClose={() => setShowPaymentModal(false)}
-          onPaymentComplete={order => {
+          onPaymentComplete={(createdOrder) => {
+            onOrderCreated(createdOrder);
             setCart([]);
             setCustomerName('');
             setTableNumber('');
-            onOrderCreated(order);
+            setDiscountPercent(0);
+            setOrderNote('');
+            setShowPaymentModal(false);
           }}
         />
       )}

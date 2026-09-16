@@ -13,8 +13,9 @@ import {
   ArrowRight
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { CartItem, OrderType, PaymentMethod, Order } from '../../types';
+import { CartItem, OrderType, PaymentMethod, Order, AppCustomizationSettings } from '../../types';
 import { sound } from '../../utils/sound';
+import { hardware } from '../../utils/hardware';
 
 interface PaymentModalProps {
   items: CartItem[];
@@ -26,6 +27,7 @@ interface PaymentModalProps {
   tableNumber?: string;
   onClose: () => void;
   onPaymentComplete: (order: Order) => void;
+  customization?: AppCustomizationSettings;
 }
 
 export const PaymentModal: React.FC<PaymentModalProps> = ({
@@ -37,7 +39,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   customerName,
   tableNumber,
   onClose,
-  onPaymentComplete
+  onPaymentComplete,
+  customization
 }) => {
   const [paymentTab, setPaymentTab] = useState<PaymentMethod>('card_terminal');
   
@@ -116,6 +119,9 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
         spread: 60,
         origin: { y: 0.7 }
       });
+      if (customization?.printer?.autoPrintOnPayment) {
+        hardware.printOrderReceipt(createdOrder, customization.printer);
+      }
       onPaymentComplete(createdOrder);
     } catch {
       // Fallback offline object
@@ -129,6 +135,9 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
       };
       setCompletedOrder(fallbackOrder);
       sound.playRegisterDing();
+      if (customization?.printer?.autoPrintOnPayment) {
+        hardware.printOrderReceipt(fallbackOrder, customization.printer);
+      }
       onPaymentComplete(fallbackOrder);
     } finally {
       setIsSubmitting(false);
@@ -253,7 +262,11 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   };
 
   const printReceipt = () => {
-    window.print();
+    if (completedOrder) {
+      hardware.printOrderReceipt(completedOrder, customization?.printer);
+    } else {
+      window.print();
+    }
   };
 
   return (

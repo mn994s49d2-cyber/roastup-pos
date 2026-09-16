@@ -46,6 +46,7 @@ let orders: any[] = [
     tax: 1.33,
     total: 8.00,
     status: 'ready',
+    kitchenBumped: true,
     paymentMethod: 'card_terminal',
     paymentStatus: 'paid',
     cardBrand: 'Visa',
@@ -58,6 +59,7 @@ let orders: any[] = [
     orderNumber: 102,
     timestamp: new Date(Date.now() - 4 * 60000).toISOString(),
     type: 'takeaway',
+    kitchenBumped: false,
     items: [
       {
         cartItemId: 'c3',
@@ -103,12 +105,13 @@ let activeCfdCart: any = {
   tax: 0,
   total: 0,
   orderType: 'takeaway',
-  customerGreeting: 'Welcome to ROASTUP!'
+  customerGreeting: 'Welcome to ROASTIES!'
 };
 
 let connectedDevices: any[] = [];
 
 let customizationSettings = {
+  themeMode: 'light',
   fontFamily: 'sans',
   fontSizeScale: 'normal',
   categoryOrder: [
@@ -424,6 +427,54 @@ app.patch('/api/orders/:id/status', (req, res) => {
     } else if (status === 'completed') {
       order.completedAt = new Date().toISOString();
     }
+    res.json({ success: true, order });
+  } else {
+    res.status(404).json({ error: 'Order not found' });
+  }
+});
+
+// Bump station endpoint (Kitchen or Front of House)
+app.patch('/api/orders/:id/bump', (req, res) => {
+  const { id } = req.params;
+  const { station, unbump } = req.body; // 'kitchen' | 'foh'
+  const order = orders.find(o => o.id === id);
+  
+  if (order) {
+    if (station === 'kitchen') {
+      order.kitchenBumped = !unbump;
+      if (!unbump) {
+        order.status = 'ready';
+        order.preparedAt = new Date().toISOString();
+      } else {
+        order.status = 'preparing';
+        delete order.preparedAt;
+      }
+    } else if (station === 'foh') {
+      order.fohBumped = !unbump;
+      if (!unbump) {
+        // Front of house performs final handover, completing the order
+        order.status = 'completed';
+        order.completedAt = new Date().toISOString();
+      } else {
+        order.status = 'ready';
+        delete order.completedAt;
+      }
+    }
+
+    res.json({ success: true, order });
+  } else {
+    res.status(404).json({ error: 'Order not found' });
+  }
+});
+
+// Order refund endpoint
+app.patch('/api/orders/:id/refund', (req, res) => {
+  const { id } = req.params;
+  const order = orders.find(o => o.id === id);
+  if (order) {
+    order.paymentStatus = 'refunded';
+    order.refundedAt = new Date().toISOString();
+    order.status = 'cancelled';
     res.json({ success: true, order });
   } else {
     res.status(404).json({ error: 'Order not found' });

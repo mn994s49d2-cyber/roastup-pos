@@ -1,9 +1,12 @@
 export type ScreenMode = 
   | 'pos' 
   | 'kds' 
+  | 'foh'
+  | 'order_history'
   | 'signage_menu' 
   | 'order_status' 
   | 'cfd' 
+  | 'admin'
   | 'inventory' 
   | 'studio'
   | 'menu_admin' 
@@ -28,6 +31,27 @@ export interface DigitalSignageSettings {
   mealDealTitle: string;
   mealDealPrice: string;
   mealDealDesc: string;
+  activeChannel?: number; // 1, 2, 3 or 0 (all)
+}
+
+export interface PrinterConfig {
+  type: 'bluetooth' | 'network' | 'browser';
+  deviceName?: string;
+  paperWidth: 58 | 80;
+  autoPrintOnPayment: boolean;
+  networkIp?: string;
+  networkPort?: number;
+  lastTestPrinted?: string;
+}
+
+export interface PaymentTerminalConfig {
+  provider: 'simulator' | 'stripe_terminal' | 'square_terminal' | 'sumup';
+  apiKey?: string;
+  readerId?: string;
+  locationId?: string;
+  deviceCode?: string;
+  status: 'connected' | 'disconnected' | 'ready';
+  testMode: boolean;
 }
 
 export interface AppCustomizationSettings {
@@ -35,6 +59,9 @@ export interface AppCustomizationSettings {
   fontSizeScale: FontSizeScale;
   digitalSignage: DigitalSignageSettings;
   categoryOrder: string[];
+  themeMode?: 'light' | 'dark';
+  printer?: PrinterConfig;
+  paymentTerminal?: PaymentTerminalConfig;
 }
 
 export type OrderType = 'takeaway' | 'dine_in';
@@ -129,6 +156,11 @@ export interface Order {
   tableNumber?: string;
   preparedAt?: string;
   completedAt?: string;
+  kitchenBumped?: boolean;
+  fohBumped?: boolean;
+  refundedAt?: string;
+  refundReason?: string;
+  printedReceipt?: boolean;
 }
 
 export interface InventoryItem {
@@ -156,12 +188,18 @@ export interface ServerNetworkInfo {
   host: string;
   port: number;
   localIp: string;
+  localIps?: string[];
+  primaryIp?: string;
+  baseUrl?: string;
   urls: {
     pos: string;
     kds: string;
-    signage: string;
+    signage?: string;
+    signageMenu?: string;
     orderStatus: string;
     cfd: string;
+    inventory?: string;
+    networkHub?: string;
   };
   connectedDevices: DeviceInfo[];
 }
