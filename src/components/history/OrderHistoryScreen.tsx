@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { Order, OrderStatus, PrinterConfig, AppCustomizationSettings } from '../../types';
 import { hardware } from '../../utils/hardware';
+import { getOrderPlacedTime, getOrderDueTime } from '../../utils/orderTime';
 
 interface OrderHistoryScreenProps {
   orders: Order[];
@@ -245,12 +246,28 @@ export const OrderHistoryScreen: React.FC<OrderHistoryScreenProps> = ({
                           isSelected ? 'bg-amber-50/80 dark:bg-amber-950/40' : ''
                         }`}
                       >
-                        <td className="py-3.5 px-4 font-black font-mono text-sm text-stone-900 dark:text-white">
-                          #{order.orderNumber}
+                        <td className="py-3.5 px-4">
+                          <div className="font-black font-mono text-sm text-stone-900 dark:text-white flex items-center gap-1.5 flex-wrap">
+                            <span className="text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/80 px-1.5 py-0.5 rounded border border-amber-200 dark:border-amber-800">
+                              {order.ticketNumber || `A-${order.orderNumber}`}
+                            </span>
+                            <span className="text-xs text-stone-400">#{order.orderNumber}</span>
+                          </div>
+                          {order.isPreOrder && (
+                            <span className="inline-block mt-1 text-[10px] font-black uppercase px-1.5 py-0.2 rounded bg-purple-100 dark:bg-purple-950 text-purple-900 dark:text-purple-300 border border-purple-300 dark:border-purple-800">
+                              ★ Pre-Order
+                            </span>
+                          )}
                         </td>
                         <td className="py-3.5 px-4">
                           <div className="font-bold text-stone-800 dark:text-stone-200">
-                            {new Date(order.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                            Placed: {getOrderPlacedTime(order)}
+                          </div>
+                          <div className="text-[11px] font-bold text-amber-700 dark:text-amber-400 font-mono flex items-center gap-1">
+                            <span>Due: {getOrderDueTime(order)}</span>
+                            {order.timeOfDay && (
+                              <span className="text-[10px] uppercase font-bold text-stone-500 font-sans">({order.timeOfDay})</span>
+                            )}
                           </div>
                           <span className="text-[10px] text-stone-400 uppercase font-semibold">
                             {order.type === 'takeaway' ? 'Takeaway' : `Dine In ${order.tableNumber ? `(T${order.tableNumber})` : ''}`}
@@ -344,9 +361,27 @@ export const OrderHistoryScreen: React.FC<OrderHistoryScreenProps> = ({
 
               {/* Order Meta */}
               <div className="p-3 bg-stone-50 dark:bg-stone-800/60 rounded-2xl border border-stone-200/80 dark:border-stone-700 space-y-2 text-xs mb-4">
+                <div className="flex justify-between items-center">
+                  <span className="text-stone-400">Ticket Number:</span>
+                  <span className="font-mono font-black text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-950 px-2 py-0.5 rounded">
+                    {selectedOrder.ticketNumber || `A-${selectedOrder.orderNumber}`}
+                  </span>
+                </div>
+                {selectedOrder.isPreOrder && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-purple-600 dark:text-purple-400 font-bold">Pre-Order:</span>
+                    <span className="font-bold text-xs bg-purple-100 dark:bg-purple-950 text-purple-900 dark:text-purple-300 px-2 py-0.5 rounded">
+                      {selectedOrder.timeOfDay ? `${selectedOrder.timeOfDay.toUpperCase()} • ` : ''}{selectedOrder.dueTime || 'Scheduled'}
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between">
-                  <span className="text-stone-400">Date &amp; Time:</span>
-                  <span className="font-bold">{new Date(selectedOrder.timestamp).toLocaleString('en-GB')}</span>
+                  <span className="text-stone-400">Placed Time:</span>
+                  <span className="font-bold font-mono text-stone-800 dark:text-stone-200">{getOrderPlacedTime(selectedOrder)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-stone-400">Target Due Time:</span>
+                  <span className="font-bold font-mono text-amber-700 dark:text-amber-400">{getOrderDueTime(selectedOrder)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-stone-400">Dining Type:</span>
@@ -371,6 +406,12 @@ export const OrderHistoryScreen: React.FC<OrderHistoryScreenProps> = ({
                 {selectedOrder.refundReason && (
                   <div className="p-2 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-[11px] font-bold">
                     Refund Reason: {selectedOrder.refundReason}
+                  </div>
+                )}
+                {(selectedOrder.notes || selectedOrder.customerNotes) && (
+                  <div className="p-2 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs font-mono whitespace-pre-wrap">
+                    <span className="font-sans font-bold block text-[10px] uppercase text-amber-700 dark:text-amber-400">Ticket Chit Note:</span>
+                    {selectedOrder.notes || selectedOrder.customerNotes}
                   </div>
                 )}
               </div>

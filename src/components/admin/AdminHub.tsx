@@ -63,6 +63,7 @@ export const AdminHub: React.FC<AdminHubProps> = ({
   const [activeTab, setActiveTab] = useState<'general' | 'menu_studio' | 'inventory' | 'printers' | 'payments' | 'network'>(initialTab);
   const [bluetoothStatus, setBluetoothStatus] = useState<string>('idle');
   const [testPrintFeedback, setTestPrintFeedback] = useState<string | null>(null);
+  const [paymentSavedMessage, setPaymentSavedMessage] = useState<string | null>(null);
 
   // Local printer config copy
   const printerConfig: PrinterConfig = customization.printer || {
@@ -136,18 +137,44 @@ export const AdminHub: React.FC<AdminHubProps> = ({
     };
     onUpdateCustomization(updated);
     saveCustomizationLocally(updated);
+
+    fetch('/api/customization', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updated)
+    }).catch(() => {});
   };
 
-  const handleUpdatePayment = (paymentUpdates: Partial<PaymentTerminalConfig>) => {
+  const handleUpdatePayment = async (paymentUpdates: Partial<PaymentTerminalConfig>) => {
+    const updatedTerminal: PaymentTerminalConfig = {
+      ...paymentConfig,
+      ...paymentUpdates
+    };
     const updated: AppCustomizationSettings = {
       ...customization,
-      paymentTerminal: {
-        ...paymentConfig,
-        ...paymentUpdates
-      }
+      paymentTerminal: updatedTerminal
     };
     onUpdateCustomization(updated);
     saveCustomizationLocally(updated);
+
+    try {
+      await fetch('/api/customization', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated)
+      });
+      const providerLabel = updatedTerminal.provider === 'simulator' 
+        ? 'Simulator' 
+        : updatedTerminal.provider === 'stripe_terminal' 
+        ? 'Stripe WisePOS E' 
+        : updatedTerminal.provider === 'square_terminal'
+        ? 'Square Terminal'
+        : 'SumUp Air';
+      setPaymentSavedMessage(`Card reader set to: ${providerLabel}`);
+      setTimeout(() => setPaymentSavedMessage(null), 4000);
+    } catch {
+      // Still saved locally
+    }
   };
 
   const handleConnectBluetooth = async () => {
@@ -502,6 +529,12 @@ export const AdminHub: React.FC<AdminHubProps> = ({
                 </div>
               </div>
 
+              {paymentSavedMessage && (
+                <div className="p-3 rounded-2xl bg-emerald-100 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 text-xs font-black text-center animate-in fade-in duration-200">
+                  ✓ {paymentSavedMessage}
+                </div>
+              )}
+
               {/* Provider Selection */}
               <div>
                 <label className="text-xs font-bold text-stone-700 dark:text-stone-300 block mb-2">
@@ -571,6 +604,24 @@ export const AdminHub: React.FC<AdminHubProps> = ({
                       value={paymentConfig.deviceCode || ''}
                       onChange={e => handleUpdatePayment({ deviceCode: e.target.value })}
                       placeholder="e.g. 8-digit device code"
+                      className="w-full bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl px-3 py-2 text-xs font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {paymentConfig.provider === 'sumup' && (
+                <div className="p-4 rounded-2xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700 space-y-3">
+                  <span className="text-xs font-black uppercase text-stone-700 dark:text-stone-300 block">
+                    SumUp Terminal Configuration
+                  </span>
+                  <div>
+                    <label className="text-[11px] font-bold text-stone-500 block mb-1">Merchant Affiliate Key / Reader ID</label>
+                    <input
+                      type="text"
+                      value={paymentConfig.readerId || ''}
+                      onChange={e => handleUpdatePayment({ readerId: e.target.value })}
+                      placeholder="e.g. SUMUP-AIR-01"
                       className="w-full bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl px-3 py-2 text-xs font-mono"
                     />
                   </div>

@@ -12,10 +12,12 @@ import {
   ShoppingBag,
   Check,
   Coffee,
-  CheckCheck
+  CheckCheck,
+  Smartphone
 } from 'lucide-react';
 import { Order, OrderStatus } from '../../types';
 import { sound } from '../../utils/sound';
+import { getOrderPlacedTime, getOrderDueTime, getOrderDueStatus } from '../../utils/orderTime';
 
 interface FrontOfHouseScreenProps {
   orders: Order[];
@@ -241,6 +243,9 @@ export const FrontOfHouseScreen: React.FC<FrontOfHouseScreenProps> = ({
               const isReady = order.status === 'ready';
               const drinksAndSauces = order.items.filter(i => isDrinkOrSauce(i.category, i.name));
               const kitchenItems = order.items.filter(i => !isDrinkOrSauce(i.category, i.name));
+              const placedTime = getOrderPlacedTime(order);
+              const dueTime = getOrderDueTime(order);
+              const dueStatus = getOrderDueStatus(order, currentTime);
 
               return (
                 <div 
@@ -257,8 +262,15 @@ export const FrontOfHouseScreen: React.FC<FrontOfHouseScreenProps> = ({
                       ? 'bg-emerald-600 text-white border-emerald-700' 
                       : 'bg-stone-50 dark:bg-stone-800/80 border-stone-200 dark:border-stone-800 text-stone-900 dark:text-stone-100'
                   }`}>
-                    <div className="flex items-center gap-2">
-                      <span className="text-2xl font-black font-mono tracking-tight">#{order.orderNumber}</span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`text-xl font-black font-mono tracking-tight px-2 py-0.5 rounded-lg border ${
+                        isKitchenDone || isReady 
+                          ? 'bg-emerald-700/60 border-emerald-500 text-white' 
+                          : 'bg-amber-100 dark:bg-amber-950 border-amber-300 dark:border-amber-800 text-amber-700 dark:text-amber-400'
+                      }`}>
+                        {order.ticketNumber || `A-${order.orderNumber}`}
+                      </span>
+                      <span className="text-xs font-mono opacity-80">#{order.orderNumber}</span>
                       <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md ${
                         order.type === 'takeaway' 
                           ? 'bg-stone-900 text-amber-400 dark:bg-white dark:text-stone-950' 
@@ -266,6 +278,17 @@ export const FrontOfHouseScreen: React.FC<FrontOfHouseScreenProps> = ({
                       }`}>
                         {order.type === 'takeaway' ? 'Takeaway Bag' : 'Dine In Tray'}
                       </span>
+                      {order.isPreOrder && (
+                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-purple-600 text-white border border-purple-400">
+                          ★ Pre-Order
+                        </span>
+                      )}
+                      {order.source === 'online_customer_app' && (
+                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-blue-500 text-white border border-blue-400 flex items-center gap-1">
+                          <Smartphone className="w-2.5 h-2.5" />
+                          Online
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-1.5 text-xs font-mono font-bold">
@@ -273,6 +296,31 @@ export const FrontOfHouseScreen: React.FC<FrontOfHouseScreenProps> = ({
                       <span>{minutes}m</span>
                     </div>
                   </div>
+
+                  {/* Order Timing Bar: Placed Time & Target Due Time */}
+                  <div className="px-3.5 py-1.5 bg-stone-100/70 dark:bg-stone-800/50 border-b border-stone-200 dark:border-stone-800 flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-1 font-mono text-stone-600 dark:text-stone-300">
+                      <span className="text-[10px] font-sans font-bold uppercase text-stone-400">Placed:</span>
+                      <span className="font-bold text-stone-800 dark:text-stone-200">{placedTime}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 font-mono">
+                      <span className="text-[10px] font-sans font-bold uppercase text-amber-600 dark:text-amber-400">Due:</span>
+                      <span className={`font-black ${dueStatus.isOverdue ? 'text-rose-600 dark:text-rose-400' : 'text-amber-900 dark:text-amber-300'}`}>
+                        {dueTime}
+                      </span>
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded-md border font-sans ${dueStatus.badgeClass}`}>
+                        {dueStatus.label}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Customer / Table Info */}
+                  {(order.customerName || order.tableNumber) && (
+                    <div className="px-3.5 py-1 bg-stone-50 dark:bg-stone-800/30 border-b border-stone-100 dark:border-stone-800 text-[11px] text-stone-600 dark:text-stone-300 flex items-center justify-between">
+                      {order.customerName && <span className="font-bold">Guest: {order.customerName}</span>}
+                      {order.tableNumber && <span className="font-bold text-amber-700 dark:text-amber-400">Table {order.tableNumber}</span>}
+                    </div>
+                  )}
 
                   {/* Ticket Body */}
                   <div className="p-4 space-y-3 flex-1 overflow-y-auto max-h-72">
@@ -359,6 +407,13 @@ export const FrontOfHouseScreen: React.FC<FrontOfHouseScreenProps> = ({
                             <span className="text-[10px] text-stone-400">({ki.variation.name})</span>
                           </div>
                         ))}
+                      </div>
+                    )}
+                    {/* Pre-Order / Customer Instructions */}
+                    {(order.notes || order.customerNotes) && (
+                      <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-950 dark:text-amber-100 font-medium">
+                        <div className="text-[10px] font-black uppercase text-amber-800 dark:text-amber-300">Ticket Notes:</div>
+                        <div className="font-mono text-stone-900 dark:text-stone-100">{order.notes || order.customerNotes}</div>
                       </div>
                     )}
                   </div>

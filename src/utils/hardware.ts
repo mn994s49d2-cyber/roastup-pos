@@ -1,4 +1,10 @@
 import { Order, PrinterConfig } from '../types';
+import { 
+  getOrderPlacedTime, 
+  getOrderDueTime, 
+  resolveTimeOfDay, 
+  formatPreOrderNotes 
+} from './orderTime';
 
 // Bluetooth GATT Service and Characteristic UUIDs commonly used by ESC/POS receipt printers
 const PRINTER_SERVICES = [
@@ -192,11 +198,29 @@ class HardwareService {
     pushStr("Crispy Loaded Roast Potatoes\n");
     pushStr("100% British Maris Piper\n\n");
 
-    // Large Order Number
+    const ticketNum = order.ticketNumber || `A-${order.orderNumber}`;
+    const placedTime = getOrderPlacedTime(order);
+    const dueTime = order.dueTime || getOrderDueTime(order);
+    const timeOfDay = order.timeOfDay || resolveTimeOfDay(order.dueAt);
+    const formattedNotes = formatPreOrderNotes(order.notes || order.customerNotes, dueTime, timeOfDay);
+
+    // Large Ticket & Order Number
     pushBytes([0x1B, 0x21, 0x20]);
-    pushStr(`ORDER #${order.orderNumber}\n`);
+    pushStr(`TICKET ${ticketNum}\n`);
     pushBytes([0x1B, 0x21, 0x00]);
-    pushStr(`*** ${order.type === 'dine_in' ? 'DINE IN' : 'TAKEAWAY'} ***\n`);
+    pushStr(`Order #${order.orderNumber} - ${order.type === 'dine_in' ? 'DINE IN' : 'TAKEAWAY'}\n`);
+    
+    if (order.isPreOrder) {
+      pushBytes([0x1B, 0x45, 0x01]);
+      pushStr(`*** PRE-ORDER DUE: ${dueTime} (${timeOfDay.toUpperCase()}) ***\n`);
+      if (order.pickupTime) {
+        pushStr(`${order.pickupTime}\n`);
+      }
+      pushBytes([0x1B, 0x45, 0x00]);
+    } else {
+      pushStr(`Placed: ${placedTime}  |  Due: ${dueTime}\n`);
+    }
+
     if (order.tableNumber) {
       pushStr(`TABLE: ${order.tableNumber}\n`);
     }
@@ -206,6 +230,14 @@ class HardwareService {
 
     const divider = widthCols === 58 ? '--------------------------------\n' : '------------------------------------------------\n';
     pushStr(divider);
+
+    // Prominent Kitchen Notes (with pre-order due banner)
+    if (formattedNotes && (order.notes || order.customerNotes || order.isPreOrder)) {
+      pushBytes([0x1B, 0x45, 0x01]); // Bold on
+      pushStr(`NOTE: ${formattedNotes}\n`);
+      pushBytes([0x1B, 0x45, 0x00]); // Bold off
+      pushStr(divider);
+    }
 
     // Left alignment for items
     pushBytes([0x1B, 0x61, 0x00]);
@@ -245,7 +277,30 @@ class HardwareService {
     if (order.cardBrand && order.cardLast4) {
       pushStr(`Card: ${order.cardBrand} ****${order.cardLast4}\n`);
     }
-    pushStr(`Date: ${new Date(order.timestamp).toLocaleString('en-GB')}\n\n`);
+    pushStr(`Date: ${new Date(order.timestamp).toLocaleString('en-GB')}\n`);
+
+    // Loyalty Details
+    if (order.loyaltyInfo) {
+      pushStr(divider);
+      pushBytes([0x1B, 0x45, 0x01]);
+      pushStr("ROASTUP LOYALTY CLUB\n");
+      pushBytes([0x1B, 0x45, 0x00]);
+      pushStr(`Member ID: ${order.loyaltyInfo.memberId}\n`);
+      if (order.loyaltyInfo.memberName) {
+        pushStr(`Member: ${order.loyaltyInfo.memberName}\n`);
+      }
+      if (order.loyaltyInfo.pointsRedeemed) {
+        pushStr(`Points Redeemed: ${order.loyaltyInfo.pointsRedeemed} pts (-GBP ${(order.loyaltyInfo.discountValue || 0).toFixed(2)})\n`);
+      }
+      if (order.loyaltyInfo.pointsEarned) {
+        pushStr(`Points Earned: +${order.loyaltyInfo.pointsEarned} pts\n`);
+      }
+      if (order.loyaltyInfo.newPoints !== undefined) {
+        pushStr(`New Point Balance: ${order.loyaltyInfo.newPoints} pts\n`);
+      }
+      pushStr("Scan QR on app to check perks\n");
+    }
+    pushStr("\n");
 
     // Center alignment for footer
     pushBytes([0x1B, 0x61, 0x01]);
@@ -277,6 +332,11 @@ class HardwareService {
     if (!doc) return;
 
     const widthCss = paperWidth === 58 ? '54mm' : '72mm';
+    const ticketNum = order.ticketNumber || `A-${order.orderNumber}`;
+    const placedTime = getOrderPlacedTime(order);
+    const dueTime = order.dueTime || getOrderDueTime(order);
+    const timeOfDay = order.timeOfDay || resolveTimeOfDay(order.dueAt);
+    const formattedNotes = formatPreOrderNotes(order.notes || order.customerNotes, dueTime, timeOfDay);
 
     const itemsHtml = order.items.map(item => `
       <div style="margin-bottom: 6px;">
@@ -350,12 +410,29 @@ class HardwareService {
             <div style="font-size: 10px;">100% British Maris Piper Potatoes</div>
             <div style="font-size: 10px;">VAT Reg: GB 984 2108 55</div>
             <div class="divider"></div>
-            <div class="order-badge">#${order.orderNumber}</div>
+            <div class="order-badge">${ticketNum}</div>
+            <div style="font-size: 13px; font-weight: bold; margin-bottom: 2px;">Order #${order.orderNumber}</div>
             <div class="type-badge">${order.type === 'dine_in' ? 'DINE IN' : 'TAKEAWAY'}</div>
             ${order.tableNumber ? `<div style="font-weight: bold;">Table ${order.tableNumber}</div>` : ''}
             ${order.customerName ? `<div>Guest: ${order.customerName}</div>` : ''}
+            
+            ${order.isPreOrder ? `
+              <div style="background: #000; color: #fff; padding: 4px; font-size: 11px; font-weight: 900; margin: 4px 0;">
+                ★ PRE-ORDER DUE: ${dueTime} (${timeOfDay.toUpperCase()}) ★
+              </div>
+              <div style="font-size: 10px; font-weight: bold; margin-bottom: 3px;">${order.pickupTime || `Pickup: Today at ${dueTime}`}</div>
+            ` : `
+              <div style="font-size: 10px; font-weight: bold; margin: 3px 0;">Placed: ${placedTime} • Due: ${dueTime}</div>
+            `}
             <div style="font-size: 9px; color: #555;">${new Date(order.timestamp).toLocaleString('en-GB')}</div>
           </div>
+
+          ${formattedNotes && (order.notes || order.customerNotes || order.isPreOrder) ? `
+            <div style="border: 2px dashed #000; padding: 6px; margin: 6px 0; background: #f8f8f8; text-align: left; font-size: 11px; font-weight: bold;">
+              <div style="font-size: 9px; text-transform: uppercase; color: #444; margin-bottom: 2px;">Kitchen Ticket Note:</div>
+              <div>${formattedNotes}</div>
+            </div>
+          ` : ''}
 
           <div class="divider"></div>
           <div>${itemsHtml}</div>
@@ -394,6 +471,39 @@ class HardwareService {
               </div>
             ` : ''}
           </div>
+
+          ${order.loyaltyInfo ? `
+            <div class="divider"></div>
+            <div style="font-size: 10px; margin: 4px 0; padding: 6px; border: 1px dashed #000; border-radius: 4px;">
+              <div class="center bold" style="font-size: 11px; margin-bottom: 4px; letter-spacing: 0.5px;">ROASTUP LOYALTY CLUB</div>
+              <div class="row"><span>Member ID:</span><span class="bold">${order.loyaltyInfo.memberId}</span></div>
+              ${order.loyaltyInfo.memberName ? `<div class="row"><span>Member:</span><span>${order.loyaltyInfo.memberName}</span></div>` : ''}
+              ${order.loyaltyInfo.pointsRedeemed ? `<div class="row"><span>Points Redeemed:</span><span class="bold">-${order.loyaltyInfo.pointsRedeemed} pts (-£${(order.loyaltyInfo.discountValue || 0).toFixed(2)})</span></div>` : ''}
+              ${order.loyaltyInfo.pointsEarned ? `<div class="row"><span>Points Earned:</span><span class="bold">+${order.loyaltyInfo.pointsEarned} pts</span></div>` : ''}
+              ${order.loyaltyInfo.newPoints !== undefined ? `<div class="row" style="margin-top: 3px; font-weight: bold; border-top: 1px dotted #888; padding-top: 2px;"><span>New Point Balance:</span><span>${order.loyaltyInfo.newPoints} pts</span></div>` : ''}
+              <div class="center" style="margin-top: 6px;">
+                <div style="display: inline-block; padding: 4px; background: #fff; border: 1px solid #000; border-radius: 3px;">
+                  <svg width="64" height="64" viewBox="0 0 100 100" style="display:block; margin: 0 auto;">
+                    <rect width="100" height="100" fill="#fff"/>
+                    <rect x="10" y="10" width="30" height="30" fill="#000"/>
+                    <rect x="15" y="15" width="20" height="20" fill="#fff"/>
+                    <rect x="20" y="20" width="10" height="10" fill="#000"/>
+                    <rect x="60" y="10" width="30" height="30" fill="#000"/>
+                    <rect x="65" y="15" width="20" height="20" fill="#fff"/>
+                    <rect x="70" y="20" width="10" height="10" fill="#000"/>
+                    <rect x="10" y="60" width="30" height="30" fill="#000"/>
+                    <rect x="15" y="65" width="20" height="20" fill="#fff"/>
+                    <rect x="20" y="70" width="10" height="10" fill="#000"/>
+                    <rect x="45" y="20" width="10" height="20" fill="#000"/>
+                    <rect x="60" y="55" width="15" height="15" fill="#000"/>
+                    <rect x="80" y="75" width="10" height="15" fill="#000"/>
+                    <rect x="45" y="60" width="10" height="30" fill="#000"/>
+                  </svg>
+                </div>
+                <div style="font-size: 8px; color: #555; margin-top: 2px;">Scan with Roastup App to check perks</div>
+              </div>
+            </div>
+          ` : ''}
 
           <div class="divider"></div>
           <div class="center" style="font-size: 10px; margin-top: 10px;">

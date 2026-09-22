@@ -1,6 +1,6 @@
 {
   "name": "Roasties POS & Kitchen Display",
   "description": "Complete Point of Sale, inventory tracking, card payment processing, network device syncing, and digital signage system for Roasties crispy roast potato business.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

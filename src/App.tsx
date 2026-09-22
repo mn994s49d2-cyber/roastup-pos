@@ -23,6 +23,13 @@ import {
   applyCustomizationToDOM 
 } from './data/customizationSettings';
 
+// =========================================================================
+// ADJUSTMENTS TO MAKE IN YOUR ROASTUP POS APP (on Google AI Studio)
+// File: src/App.tsx (or wherever POS orders state is managed)
+// =========================================================================
+
+const CUSTOMER_APP_URL = "https://ais-dev-wzwlyr5z47t37eijstn6yp-692264068415.europe-west2.run.app";
+
 export default function App() {
   // Screen mode detection via URL parameter (for dedicated device boot e.g. ?screen=kds)
   const getInitialScreen = (): ScreenMode => {
@@ -90,21 +97,24 @@ export default function App() {
           const ordersData = await ordersRes.json();
           if (Array.isArray(ordersData)) {
             setOrders(prev => {
-              // Merge server orders without regressing optimistic bump states
-              return ordersData.map((srv: Order) => {
-                const local = prev.find(p => p.id === srv.id);
-                if (!local) return srv;
+              // Merge server orders without regressing optimistic bump states or losing synced online orders
+              const map = new Map(prev.map(o => [o.id, o]));
+              ordersData.forEach((srv: Order) => {
+                const local = map.get(srv.id);
                 const isLocalMoreAdvanced =
-                  (local.status === 'completed' && srv.status !== 'completed') ||
-                  (local.status === 'ready' && srv.status === 'preparing');
+                  (local?.status === 'completed' && srv.status !== 'completed') ||
+                  (local?.status === 'ready' && srv.status === 'preparing');
 
-                return {
+                map.set(srv.id, {
                   ...srv,
-                  kitchenBumped: srv.kitchenBumped ?? local.kitchenBumped ?? false,
-                  fohBumped: srv.fohBumped ?? local.fohBumped ?? false,
-                  status: isLocalMoreAdvanced ? local.status : srv.status
-                };
+                  kitchenBumped: srv.kitchenBumped ?? local?.kitchenBumped ?? false,
+                  fohBumped: srv.fohBumped ?? local?.fohBumped ?? false,
+                  status: isLocalMoreAdvanced && local ? local.status : srv.status
+                });
               });
+              return Array.from(map.values()).sort((a, b) => 
+                new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+              );
             });
           }
         }
@@ -118,10 +128,20 @@ export default function App() {
           const customData = await customRes.json();
           if (customData && customData.fontFamily) {
             setCustomization(prev => {
+              const currentTerminal = prev.paymentTerminal;
+              const serverTerminal = customData.paymentTerminal;
+              
+              // Prevent background polling from reverting a configured card reader to simulator
+              const resolvedTerminal = (currentTerminal && currentTerminal.provider && currentTerminal.provider !== 'simulator')
+                ? { ...serverTerminal, ...currentTerminal }
+                : (serverTerminal || currentTerminal);
+
               const merged: AppCustomizationSettings = {
                 ...prev,
                 ...customData,
                 themeMode: customData.themeMode || prev.themeMode || 'light',
+                paymentTerminal: resolvedTerminal,
+                printer: customData.printer || prev.printer,
                 digitalSignage: {
                   ...prev.digitalSignage,
                   ...(customData.digitalSignage || {})
@@ -143,6 +163,66 @@ export default function App() {
     const interval = setInterval(fetchData, 2000); // 2s polling for fast station bumping
     return () => clearInterval(interval);
   }, []);
+
+  // Synchronize orders with online customer app via backend proxy
+  const syncOnlineOrders = async () => {
+    try {
+      const res = await fetch('/api/customer-app/orders');
+      if (res.ok) {
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const onlineOrders = await res.json();
+          if (Array.isArray(onlineOrders) && onlineOrders.length > 0) {
+            setOrders(prevOrders => {
+              // Merge customer online orders into POS order queue
+              const map = new Map(prevOrders.map(o => [o.id, o]));
+              onlineOrders.forEach((order: any) => {
+                const existing = map.get(order.id);
+                map.set(order.id, {
+                  ...order,
+                  source: order.source || 'online_customer_app',
+                  // Preserve optimistic local bump states if already bumped in POS
+                  kitchenBumped: order.kitchenBumped ?? existing?.kitchenBumped ?? false,
+                  fohBumped: order.fohBumped ?? existing?.fohBumped ?? false,
+                  status: (existing?.status === 'completed' && order.status !== 'completed')
+                    ? 'completed'
+                    : (existing?.status === 'ready' && order.status === 'preparing')
+                    ? 'ready'
+                    : (order.status || 'pending'),
+                  type: order.type === 'dine_in' ? 'dine_in' : 'takeaway',
+                });
+              });
+              return Array.from(map.values()).sort((a, b) => 
+                new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+              );
+            });
+          }
+        }
+      }
+    } catch {
+      // Silent catch for smooth background polling
+    }
+  };
+
+  // Poll online orders every 3 seconds
+  useEffect(() => {
+    syncOnlineOrders();
+    const interval = setInterval(syncOnlineOrders, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Forward kitchen bump event to customer app
+  const onBumpKitchen = async (orderId: string, unbump: boolean = false) => {
+    try {
+      await fetch(`/api/customer-app/orders/${orderId}/bump`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ station: 'kitchen', unbump })
+      });
+    } catch (e) {
+      console.warn("Failed to notify customer app:", e);
+    }
+  };
 
   // Update browser URL query parameter when screen changes
   const handleSelectScreen = (screen: ScreenMode) => {
@@ -192,6 +272,9 @@ export default function App() {
       return o;
     }));
 
+    // Send bump event to customer app so the customer gets notified in real-time!
+    await onBumpKitchen(orderId, unbump);
+
     try {
       const res = await fetch(`/api/orders/${orderId}/bump`, {
         method: 'PATCH',
@@ -221,6 +304,26 @@ export default function App() {
       }
       return o;
     }));
+
+    // Notify customer app that order has been completed/handed over
+    try {
+      let res: Response | null = null;
+      try {
+        res = await fetch(`${CUSTOMER_APP_URL}/api/orders/${orderId}/bump`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ station: 'foh', unbump: false })
+        });
+      } catch {
+        res = await fetch(`/api/customer-app/orders/${orderId}/bump`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ station: 'foh', unbump: false })
+        });
+      }
+    } catch (e) {
+      console.warn("Failed to notify customer app of FOH bump:", e);
+    }
 
     try {
       const res = await fetch(`/api/orders/${orderId}/bump`, {
@@ -300,6 +403,12 @@ export default function App() {
     setCustomization(settings);
     saveCustomizationLocally(settings);
     applyCustomizationToDOM(settings);
+
+    fetch('/api/customization', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    }).catch(() => {});
   };
 
   const handleResetDefaults = async () => {

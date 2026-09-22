@@ -13,9 +13,10 @@ import {
   ArrowRight
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { CartItem, OrderType, PaymentMethod, Order, AppCustomizationSettings } from '../../types';
+import { CartItem, OrderType, PaymentMethod, Order, AppCustomizationSettings, LoyaltyTransactionInfo } from '../../types';
 import { sound } from '../../utils/sound';
 import { hardware } from '../../utils/hardware';
+import { getOrderPlacedTime, getOrderDueTime, formatOrderDateTime } from '../../utils/orderTime';
 
 interface PaymentModalProps {
   items: CartItem[];
@@ -25,9 +26,12 @@ interface PaymentModalProps {
   orderType: OrderType;
   customerName?: string;
   tableNumber?: string;
+  dueMinutes?: number;
+  dueTime?: string;
   onClose: () => void;
   onPaymentComplete: (order: Order) => void;
   customization?: AppCustomizationSettings;
+  loyaltyInfo?: LoyaltyTransactionInfo | null;
 }
 
 export const PaymentModal: React.FC<PaymentModalProps> = ({
@@ -38,9 +42,12 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   orderType,
   customerName,
   tableNumber,
+  dueMinutes = 10,
+  dueTime,
   onClose,
   onPaymentComplete,
-  customization
+  customization,
+  loyaltyInfo
 }) => {
   const [paymentTab, setPaymentTab] = useState<PaymentMethod>('card_terminal');
   
@@ -87,12 +94,67 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     changeDue?: number
   ) => {
     setIsSubmitting(true);
+
+    // Calculate points earned: 10 points per £1 spent (e.g. £7.50 = 75 pts)
+    const pointsEarned = Math.max(1, Math.round(total * 10));
+
+    let processedLoyalty: LoyaltyTransactionInfo | undefined = undefined;
+    if (loyaltyInfo?.memberId) {
+      const prev = loyaltyInfo.previousPoints ?? 0;
+      const redeemed = loyaltyInfo.pointsCost ?? 0;
+      const newBalance = Math.max(0, prev - redeemed + pointsEarned);
+
+      processedLoyalty = {
+        ...loyaltyInfo,
+        pointsEarned,
+        pointsRedeemed: redeemed > 0 ? redeemed : undefined,
+        newPoints: newBalance
+      };
+
+      // Award points on server / customer app
+      fetch('/api/auth/update-loyalty', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customerId: loyaltyInfo.memberId,
+          pointsDelta: pointsEarned,
+          description: `Earned on Order`,
+          type: 'earn'
+        })
+      }).catch(() => {});
+
+      // If voucher was redeemed, mark it redeemed on server
+      if (loyaltyInfo.rewardId) {
+        fetch('/api/pos/scan-loyalty', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            code: loyaltyInfo.memberId,
+            action: 'redeem',
+            rewardId: loyaltyInfo.rewardId,
+            rewardTitle: loyaltyInfo.rewardTitle,
+            pointsCost: loyaltyInfo.pointsCost,
+            discountValue: loyaltyInfo.discountValue,
+            tillId: 'Till 1'
+          })
+        }).catch(() => {});
+      }
+    }
+
+    const placedAt = new Date().toISOString();
+    const finalDueMinutes = dueMinutes || (orderType === 'dine_in' ? 12 : 10);
+    const finalDueTime = dueTime || new Date(Date.now() + finalDueMinutes * 60000).toISOString();
+
     const orderPayload = {
       type: orderType,
       items,
       subtotal,
       tax,
       total,
+      placedAt,
+      timestamp: placedAt,
+      dueTime: finalDueTime,
+      dueMinutes: finalDueMinutes,
       paymentMethod: method,
       paymentStatus: 'paid',
       paymentRef,
@@ -102,7 +164,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
       changeDue: changeDue,
       customerName,
       tableNumber,
-      status: 'pending'
+      status: 'pending',
+      loyaltyInfo: processedLoyalty
     };
 
     try {
@@ -129,7 +192,10 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
         ...orderPayload,
         id: `ord-${Date.now()}`,
         orderNumber: Math.floor(Math.random() * 800) + 100,
-        timestamp: new Date().toISOString(),
+        timestamp: placedAt,
+        placedAt,
+        dueTime: finalDueTime,
+        dueMinutes: finalDueMinutes,
         status: 'pending',
         paymentStatus: 'paid'
       };
@@ -313,6 +379,21 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
               <p className="text-xs text-stone-500 mt-1">
                 Sent to Kitchen Display Screen (KDS) &amp; Customer Tracker
               </p>
+              <div className="mt-3 flex items-center justify-center gap-3 text-xs bg-amber-50 dark:bg-stone-800/80 border border-amber-200 dark:border-stone-700 rounded-xl py-2 px-4 shadow-2xs">
+                <div>
+                  <span className="text-stone-500 text-[10px] uppercase font-bold block">Placed Time</span>
+                  <span className="font-mono font-black text-stone-900 dark:text-white text-sm">
+                    {getOrderPlacedTime(completedOrder)}
+                  </span>
+                </div>
+                <div className="h-6 w-px bg-amber-200 dark:bg-stone-700" />
+                <div>
+                  <span className="text-amber-800 dark:text-amber-400 text-[10px] uppercase font-bold block">Target Due Time</span>
+                  <span className="font-mono font-black text-amber-900 dark:text-amber-300 text-sm">
+                    {getOrderDueTime(completedOrder)} ({completedOrder.dueMinutes || 10}m)
+                  </span>
+                </div>
+              </div>
             </div>
 
             {/* Thermal Printable Receipt Card */}
@@ -324,8 +405,12 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                 <p className="font-black text-sm tracking-wider">ROASTUP</p>
                 <p className="text-[10px] text-stone-500">CRISPY ROAST POTATOES</p>
                 <p className="text-[10px] text-stone-400">VAT Reg: GB 389 4210 99</p>
-                <p className="text-[10px] text-stone-400">{new Date(completedOrder.timestamp).toLocaleString()}</p>
+                <p className="text-[10px] text-stone-400">{formatOrderDateTime(completedOrder.placedAt || completedOrder.timestamp)}</p>
                 <p className="font-bold text-xs mt-1">ORDER #{completedOrder.orderNumber} ({completedOrder.type.toUpperCase()})</p>
+                <div className="mt-1 flex items-center justify-between text-[11px] font-bold px-1 bg-stone-100 rounded-sm py-0.5">
+                  <span>Placed: {getOrderPlacedTime(completedOrder)}</span>
+                  <span className="text-amber-900">Due: {getOrderDueTime(completedOrder)}</span>
+                </div>
               </div>
 
               <div className="space-y-1.5 border-b border-dashed border-stone-200 pb-2">
@@ -381,6 +466,64 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                   <div className="flex justify-between text-emerald-600 font-bold pt-1">
                     <span>Change Due:</span>
                     <span>£{completedOrder.changeDue.toFixed(2)}</span>
+                  </div>
+                )}
+
+                {/* Loyalty Club Section on Thermal Receipt */}
+                {completedOrder.loyaltyInfo && (
+                  <div className="border-t border-b border-dashed border-stone-300 py-2.5 my-2 space-y-1 bg-amber-50/50 p-2 rounded-xl text-left">
+                    <p className="font-black text-center text-xs tracking-wider text-stone-900">ROASTUP LOYALTY CLUB</p>
+                    <div className="flex justify-between text-[11px]">
+                      <span>Member ID:</span>
+                      <span className="font-bold font-mono">{completedOrder.loyaltyInfo.memberId}</span>
+                    </div>
+                    {completedOrder.loyaltyInfo.memberName && (
+                      <div className="flex justify-between text-[11px]">
+                        <span>Member:</span>
+                        <span>{completedOrder.loyaltyInfo.memberName}</span>
+                      </div>
+                    )}
+                    {completedOrder.loyaltyInfo.pointsRedeemed ? (
+                      <div className="flex justify-between text-[11px] text-amber-900 font-bold">
+                        <span>Points Redeemed:</span>
+                        <span>-{completedOrder.loyaltyInfo.pointsRedeemed} pts (-£{(completedOrder.loyaltyInfo.discountValue || 0).toFixed(2)})</span>
+                      </div>
+                    ) : null}
+                    {completedOrder.loyaltyInfo.pointsEarned ? (
+                      <div className="flex justify-between text-[11px] text-emerald-700 font-bold">
+                        <span>Points Earned:</span>
+                        <span>+{completedOrder.loyaltyInfo.pointsEarned} pts</span>
+                      </div>
+                    ) : null}
+                    {completedOrder.loyaltyInfo.newPoints !== undefined && (
+                      <div className="flex justify-between text-[11px] font-black border-t border-stone-200 pt-1">
+                        <span>New Point Balance:</span>
+                        <span>{completedOrder.loyaltyInfo.newPoints} pts</span>
+                      </div>
+                    )}
+
+                    {/* 2D QR Code on Receipt */}
+                    <div className="text-center pt-2">
+                      <div className="inline-block p-1.5 bg-white rounded-lg border border-stone-200 shadow-xs">
+                        <svg width="60" height="60" viewBox="0 0 100 100" className="mx-auto block">
+                          <rect width="100" height="100" fill="#fff"/>
+                          <rect x="10" y="10" width="30" height="30" fill="#000"/>
+                          <rect x="15" y="15" width="20" height="20" fill="#fff"/>
+                          <rect x="20" y="20" width="10" height="10" fill="#000"/>
+                          <rect x="60" y="10" width="30" height="30" fill="#000"/>
+                          <rect x="65" y="15" width="20" height="20" fill="#fff"/>
+                          <rect x="70" y="20" width="10" height="10" fill="#000"/>
+                          <rect x="10" y="60" width="30" height="30" fill="#000"/>
+                          <rect x="15" y="65" width="20" height="20" fill="#fff"/>
+                          <rect x="20" y="70" width="10" height="10" fill="#000"/>
+                          <rect x="45" y="20" width="10" height="20" fill="#000"/>
+                          <rect x="60" y="55" width="15" height="15" fill="#000"/>
+                          <rect x="80" y="75" width="10" height="15" fill="#000"/>
+                          <rect x="45" y="60" width="10" height="30" fill="#000"/>
+                        </svg>
+                      </div>
+                      <p className="text-[9px] text-stone-500 mt-1">Scan to check points / open customer app</p>
+                    </div>
                   </div>
                 )}
               </div>
@@ -455,99 +598,113 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
             </div>
 
             {/* TAB 1: INTEGRATED CARD TERMINAL SIMULATOR */}
-            {paymentTab === 'card_terminal' && (
-              <div className="flex-1 flex flex-col items-center justify-center p-5 bg-stone-50/60 border border-stone-200 rounded-3xl space-y-4">
-                {/* Terminal Device Screen Frame */}
-                <div className="w-64 bg-white border-2 border-stone-200 rounded-3xl p-4 shadow-sm text-center space-y-3">
-                  <div className="flex items-center justify-between border-b border-stone-100 pb-2">
-                    <span className="text-[10px] text-stone-400 font-mono">READER-01</span>
-                    <span className="flex items-center gap-1 text-[10px] text-emerald-600 font-semibold">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Ready
-                    </span>
-                  </div>
+            {paymentTab === 'card_terminal' && (() => {
+              const provider = customization?.paymentTerminal?.provider || 'simulator';
+              const readerNameMap: Record<string, string> = {
+                simulator: 'Vita Mojo Simulator',
+                stripe_terminal: 'Stripe Terminal (WisePOS E)',
+                square_terminal: 'Square Terminal',
+                sumup: 'SumUp Air'
+              };
+              const readerTitle = readerNameMap[provider] || 'Card Reader';
+              const readerIdentifier = customization?.paymentTerminal?.readerId || customization?.paymentTerminal?.deviceCode || 'READER-01';
 
-                  <div className="py-2">
-                    <p className="text-[11px] text-stone-500 font-semibold uppercase tracking-wider">ROASTUP CHECKOUT</p>
-                    <p className="text-2xl font-black text-stone-900">£{total.toFixed(2)}</p>
+              return (
+                <div className="flex-1 flex flex-col items-center justify-center p-5 bg-stone-50/60 border border-stone-200 rounded-3xl space-y-4">
+                  {/* Terminal Device Screen Frame */}
+                  <div className="w-64 bg-white border-2 border-stone-200 rounded-3xl p-4 shadow-sm text-center space-y-3">
+                    <div className="flex items-center justify-between border-b border-stone-100 pb-2">
+                      <span className="text-[10px] text-stone-600 font-mono font-bold truncate max-w-[130px]" title={readerIdentifier}>
+                        {readerIdentifier}
+                      </span>
+                      <span className="flex items-center gap-1 text-[10px] text-emerald-600 font-semibold shrink-0">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Ready
+                      </span>
+                    </div>
 
-                    {terminalState === 'waiting_card' && (
-                      <div className="mt-3 flex flex-col items-center space-y-2">
-                        <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center animate-pulse">
-                          <Smartphone className="w-5 h-5" />
+                    <div className="py-2">
+                      <p className="text-[10px] text-amber-600 font-black uppercase tracking-wider">{readerTitle}</p>
+                      <p className="text-2xl font-black text-stone-900">£{total.toFixed(2)}</p>
+
+                      {terminalState === 'waiting_card' && (
+                        <div className="mt-3 flex flex-col items-center space-y-2">
+                          <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center animate-pulse">
+                            <Smartphone className="w-5 h-5" />
+                          </div>
+                          <p className="text-xs font-bold text-stone-900">Tap Card or Insert Chip</p>
+                          <p className="text-[10px] text-stone-400">Apple Pay, Google Pay, Contactless</p>
                         </div>
-                        <p className="text-xs font-bold text-stone-900">Tap Card or Insert Chip</p>
-                        <p className="text-[10px] text-stone-400">Apple Pay, Google Pay, Contactless</p>
-                      </div>
-                    )}
+                      )}
 
-                    {terminalState === 'processing' && (
-                      <div className="mt-3 flex flex-col items-center space-y-2">
-                        <div className="w-8 h-8 border-2 border-amber-400 border-t-stone-900 rounded-full animate-spin" />
-                        <p className="text-xs font-bold text-stone-900">Authorizing Payment...</p>
-                        <p className="text-[10px] text-stone-400">Contacting Banking Network</p>
-                      </div>
-                    )}
+                      {terminalState === 'processing' && (
+                        <div className="mt-3 flex flex-col items-center space-y-2">
+                          <div className="w-8 h-8 border-2 border-amber-400 border-t-stone-900 rounded-full animate-spin" />
+                          <p className="text-xs font-bold text-stone-900">Authorizing Payment...</p>
+                          <p className="text-[10px] text-stone-400">Contacting Banking Network</p>
+                        </div>
+                      )}
 
-                    {terminalState === 'pin_prompt' && (
-                      <div className="mt-2 space-y-2">
-                        <p className="text-xs font-bold text-stone-900">Enter PIN on Terminal</p>
-                        <input
-                          type="password"
-                          maxLength={4}
-                          value={pin}
-                          onChange={e => setPin(e.target.value)}
-                          placeholder="••••"
-                          className="w-24 text-center tracking-widest text-lg font-bold bg-stone-50 border border-stone-200 rounded-xl py-1 text-stone-900 focus:outline-hidden focus:border-amber-400"
-                        />
-                        <button
-                          type="button"
-                          onClick={handlePinSubmit}
-                          className="w-full mt-1 py-1.5 bg-amber-400 hover:bg-amber-500 text-stone-950 font-black text-xs rounded-xl"
-                        >
-                          Confirm PIN
-                        </button>
-                      </div>
-                    )}
+                      {terminalState === 'pin_prompt' && (
+                        <div className="mt-2 space-y-2">
+                          <p className="text-xs font-bold text-stone-900">Enter PIN on Terminal</p>
+                          <input
+                            type="password"
+                            maxLength={4}
+                            value={pin}
+                            onChange={e => setPin(e.target.value)}
+                            placeholder="••••"
+                            className="w-24 text-center tracking-widest text-lg font-bold bg-stone-50 border border-stone-200 rounded-xl py-1 text-stone-900 focus:outline-hidden focus:border-amber-400"
+                          />
+                          <button
+                            type="button"
+                            onClick={handlePinSubmit}
+                            className="w-full mt-1 py-1.5 bg-amber-400 hover:bg-amber-500 text-stone-950 font-black text-xs rounded-xl"
+                          >
+                            Confirm PIN
+                          </button>
+                        </div>
+                      )}
 
-                    {terminalState === 'declined' && (
-                      <div className="mt-3 flex flex-col items-center space-y-1 text-rose-600">
-                        <AlertTriangle className="w-6 h-6" />
-                        <p className="text-xs font-bold">Payment Declined</p>
-                        <button
-                          type="button"
-                          onClick={() => setTerminalState('waiting_card')}
-                          className="text-[11px] underline text-stone-500 mt-1"
-                        >
-                          Try Again
-                        </button>
-                      </div>
-                    )}
+                      {terminalState === 'declined' && (
+                        <div className="mt-3 flex flex-col items-center space-y-1 text-rose-600">
+                          <AlertTriangle className="w-6 h-6" />
+                          <p className="text-xs font-bold">Payment Declined</p>
+                          <button
+                            type="button"
+                            onClick={() => setTerminalState('waiting_card')}
+                            className="text-[11px] underline text-stone-500 mt-1"
+                          >
+                            Try Again
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Cashier Control triggers for terminal */}
+                  <div className="w-full max-w-sm flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={terminalState === 'processing'}
+                      onClick={triggerTerminalTap}
+                      className="flex-1 py-2.5 px-3 rounded-2xl bg-amber-400 hover:bg-amber-500 text-stone-950 font-black text-xs flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer shadow-xs"
+                    >
+                      <Smartphone className="w-4 h-4" />
+                      <span>Customer Tap / Pay</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={terminalState === 'processing'}
+                      onClick={triggerTerminalChip}
+                      className="py-2.5 px-3 rounded-2xl bg-white hover:bg-stone-50 text-stone-800 border border-stone-200 font-bold text-xs transition-colors disabled:opacity-50 cursor-pointer shadow-2xs"
+                    >
+                      Insert Chip
+                    </button>
                   </div>
                 </div>
-
-                {/* Cashier Control triggers for terminal */}
-                <div className="w-full max-w-sm flex items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={terminalState === 'processing'}
-                    onClick={triggerTerminalTap}
-                    className="flex-1 py-2.5 px-3 rounded-2xl bg-amber-400 hover:bg-amber-500 text-stone-950 font-black text-xs flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer shadow-xs"
-                  >
-                    <Smartphone className="w-4 h-4" />
-                    <span>Customer Tap / Pay</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={terminalState === 'processing'}
-                    onClick={triggerTerminalChip}
-                    className="py-2.5 px-3 rounded-2xl bg-white hover:bg-stone-50 text-stone-800 border border-stone-200 font-bold text-xs transition-colors disabled:opacity-50 cursor-pointer shadow-2xs"
-                  >
-                    Insert Chip
-                  </button>
-                </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* TAB 2: MANUAL CARD ENTRY */}
             {paymentTab === 'card_manual' && (

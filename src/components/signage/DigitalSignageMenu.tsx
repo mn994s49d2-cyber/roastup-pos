@@ -82,7 +82,74 @@ export const DigitalSignageMenu: React.FC<DigitalSignageMenuProps> = ({
   // Current category to render
   const safeIndex = activeCategoryIndex % channelCategories.length;
   const currentCategory = channelCategories[safeIndex] || channelCategories[0];
-  const itemsInCurrentCategory = menuItems.filter(i => i.category === currentCategory && i.inStock !== false);
+  // Include all items in category (including sold out, which will be greyed out)
+  const itemsInCurrentCategory = menuItems.filter(i => i.category === currentCategory);
+
+  const [tvScale, setTvScale] = useState<'auto' | 'standard' | 'large' | 'xl'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('roastup_tv_scale');
+      if (saved === 'auto' || saved === 'standard' || saved === 'large' || saved === 'xl') return saved;
+    }
+    return 'auto';
+  });
+
+  const handleSetTvScale = (scale: 'auto' | 'standard' | 'large' | 'xl') => {
+    setTvScale(scale);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('roastup_tv_scale', scale);
+    }
+  };
+
+  const getItemNameClass = () => {
+    switch (tvScale) {
+      case 'standard': return 'text-sm sm:text-base lg:text-lg font-black text-stone-900 dark:text-white truncate';
+      case 'large': return 'text-base sm:text-lg lg:text-xl xl:text-2xl font-black text-stone-900 dark:text-white truncate';
+      case 'xl': return 'text-lg sm:text-xl lg:text-2xl xl:text-3xl font-black text-stone-900 dark:text-white truncate';
+      default: // auto: dynamic fluid clamp for perfect proportion on any screen
+        return 'text-[clamp(1rem,1.3vw+0.25rem,1.95rem)] font-black text-stone-900 dark:text-white truncate';
+    }
+  };
+
+  const getItemDescClass = () => {
+    switch (tvScale) {
+      case 'standard': return 'text-xs sm:text-xs md:text-sm text-stone-500 dark:text-stone-400 line-clamp-2 mt-0.5 leading-snug';
+      case 'large': return 'text-xs sm:text-sm lg:text-base text-stone-500 dark:text-stone-400 line-clamp-2 mt-0.5 leading-snug';
+      case 'xl': return 'text-sm sm:text-base lg:text-lg text-stone-500 dark:text-stone-400 line-clamp-2 mt-0.5 leading-snug';
+      default: // auto
+        return 'text-[clamp(0.75rem,0.85vw+0.15rem,1.15rem)] text-stone-500 dark:text-stone-400 line-clamp-2 mt-0.5 leading-snug';
+    }
+  };
+
+  const getItemPriceClass = (isSoldOut: boolean) => {
+    const base = isSoldOut ? 'line-through text-stone-400' : 'text-stone-900 dark:text-white';
+    switch (tvScale) {
+      case 'standard': return `text-base sm:text-lg md:text-xl lg:text-2xl font-black font-mono block ${base}`;
+      case 'large': return `text-lg sm:text-xl md:text-2xl lg:text-3xl font-black font-mono block ${base}`;
+      case 'xl': return `text-xl sm:text-2xl md:text-3xl lg:text-4xl font-black font-mono block ${base}`;
+      default: // auto
+        return `text-[clamp(1.15rem,1.6vw+0.3rem,2.4rem)] font-black font-mono block ${base}`;
+    }
+  };
+
+  const getCategoryHeaderClass = () => {
+    switch (tvScale) {
+      case 'standard': return 'text-xl lg:text-2xl font-black text-stone-900 dark:text-white tracking-tight uppercase';
+      case 'large': return 'text-2xl lg:text-3xl xl:text-4xl font-black text-stone-900 dark:text-white tracking-tight uppercase';
+      case 'xl': return 'text-3xl lg:text-4xl xl:text-5xl font-black text-stone-900 dark:text-white tracking-tight uppercase';
+      default: // auto
+        return 'text-[clamp(1.4rem,2.4vw+0.3rem,3.25rem)] font-black text-stone-900 dark:text-white tracking-tight uppercase';
+    }
+  };
+
+  const getImageSizeClass = () => {
+    switch (tvScale) {
+      case 'standard': return 'w-14 h-14 sm:w-16 sm:h-16 lg:w-20 lg:h-20 rounded-2xl object-cover border border-stone-200 dark:border-stone-700';
+      case 'large': return 'w-16 h-16 sm:w-20 sm:h-20 lg:w-24 lg:h-24 xl:w-28 xl:h-28 rounded-2xl object-cover border border-stone-200 dark:border-stone-700';
+      case 'xl': return 'w-20 h-20 sm:w-24 sm:h-24 lg:w-28 lg:h-28 xl:w-32 xl:h-32 rounded-2xl object-cover border border-stone-200 dark:border-stone-700';
+      default: // auto
+        return 'w-[clamp(3.5rem,5.5vw,6rem)] h-[clamp(3.5rem,5.5vw,6rem)] rounded-2xl object-cover border border-stone-200 dark:border-stone-700';
+    }
+  };
 
   const {
     layoutMode = 'grid-2col',
@@ -144,7 +211,7 @@ export const DigitalSignageMenu: React.FC<DigitalSignageMenuProps> = ({
             <span className="text-[10px] font-black tracking-widest uppercase text-amber-600 dark:text-amber-400 block">
               Now Serving
             </span>
-            <span className="text-2xl lg:text-3xl font-black text-stone-900 dark:text-white tracking-tight uppercase">
+            <span className={getCategoryHeaderClass()}>
               {currentCategory}
             </span>
           </div>
@@ -159,51 +226,79 @@ export const DigitalSignageMenu: React.FC<DigitalSignageMenuProps> = ({
                 ? 'grid-cols-1 md:grid-cols-2 xl:grid-cols-3' 
                 : 'grid-cols-1 md:grid-cols-2'
             }`}>
-              {itemsInCurrentCategory.map(item => (
-                <div 
-                  key={item.id}
-                  className="p-3.5 rounded-3xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 flex items-center justify-between gap-3.5 shadow-2xs"
-                >
-                  <div className="flex items-center gap-3 flex-1 min-w-0">
-                    {showImages && item.imageUrl && (
-                      <img 
-                        src={item.imageUrl} 
-                        alt={item.name}
-                        className="w-14 h-14 rounded-2xl object-cover border border-stone-200 dark:border-stone-700 shrink-0"
-                        referrerPolicy="no-referrer"
-                      />
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <h4 className="text-sm font-black text-stone-900 dark:text-white truncate">
-                          {item.name}
-                        </h4>
-                        {showDietaryBadges && item.tags?.includes('signature') && (
-                          <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-amber-400 text-stone-950 shrink-0">
-                            ★ Top Pick
-                          </span>
+              {itemsInCurrentCategory.map(item => {
+                const isSoldOut = item.inStock === false;
+                return (
+                  <div 
+                    key={item.id}
+                    className={`rounded-3xl border transition-all flex items-center justify-between shadow-2xs relative overflow-hidden ${
+                      isSoldOut 
+                        ? 'p-3.5 sm:p-4 lg:p-4.5 xl:p-5 bg-stone-100/70 dark:bg-stone-900/60 border-dashed border-stone-300 dark:border-stone-800 opacity-55 grayscale select-none' 
+                        : 'p-3.5 sm:p-4 lg:p-4.5 xl:p-5 bg-white dark:bg-stone-900 border-stone-200 dark:border-stone-800'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3.5 sm:gap-4 flex-1 min-w-0">
+                      {showImages && item.imageUrl && (
+                        <div className="relative shrink-0">
+                          <img 
+                            src={item.imageUrl} 
+                            alt={item.name}
+                            className={getImageSizeClass()}
+                            referrerPolicy="no-referrer"
+                          />
+                          {isSoldOut && (
+                            <div className="absolute inset-0 bg-black/60 rounded-2xl flex items-center justify-center">
+                              <span className="text-[9px] sm:text-[10px] font-black uppercase text-amber-300 px-1.5 py-0.5 rounded bg-black/90">
+                                86'd
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className={getItemNameClass()}>
+                            {item.name}
+                          </h4>
+                          {isSoldOut ? (
+                            <span className="text-[10px] sm:text-xs font-black uppercase px-2 py-0.5 rounded-md bg-stone-800 text-amber-400 dark:bg-amber-400 dark:text-stone-950 shrink-0">
+                              Sold Out
+                            </span>
+                          ) : (
+                            showDietaryBadges && item.tags?.includes('signature') && (
+                              <span className="text-[9px] sm:text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-400 text-stone-950 shrink-0">
+                                ★ Top Pick
+                              </span>
+                            )
+                          )}
+                        </div>
+                        {showDescriptions && (
+                          <p className={getItemDescClass()}>
+                            {item.description}
+                          </p>
                         )}
                       </div>
-                      {showDescriptions && (
-                        <p className="text-[11px] text-stone-500 dark:text-stone-400 line-clamp-2 mt-0.5 leading-tight">
-                          {item.description}
-                        </p>
+                    </div>
+
+                    <div className="text-right shrink-0 pl-2">
+                      <span className={getItemPriceClass(isSoldOut)}>
+                        £{(item.defaultPrice ?? item.variations?.[0]?.price ?? 0).toFixed(2)}
+                      </span>
+                      {isSoldOut ? (
+                        <span className="text-[10px] sm:text-xs font-black text-rose-500 uppercase tracking-wider block mt-0.5">
+                          Out of stock
+                        </span>
+                      ) : (
+                        showVariations && item.variations && item.variations.length > 1 && (
+                          <span className="block text-[10px] sm:text-xs text-stone-400 font-bold uppercase">
+                            From £{Math.min(...item.variations.map(v => v.price)).toFixed(2)}
+                          </span>
+                        )
                       )}
                     </div>
                   </div>
-
-                  <div className="text-right shrink-0">
-                    <span className="text-lg font-black text-stone-900 dark:text-white font-mono">
-                      £{(item.defaultPrice ?? item.variations?.[0]?.price ?? 0).toFixed(2)}
-                    </span>
-                    {showVariations && item.variations && item.variations.length > 1 && (
-                      <span className="block text-[9px] text-stone-400 font-bold uppercase">
-                        From £{Math.min(...item.variations.map(v => v.price)).toFixed(2)}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Signature Meal Deal Footer Banner */}
@@ -316,6 +411,29 @@ export const DigitalSignageMenu: React.FC<DigitalSignageMenuProps> = ({
           >
             <Plus className="w-3.5 h-3.5" />
           </button>
+        </div>
+
+        {/* Display Scale Adjuster */}
+        <div className="flex items-center gap-1 bg-black/40 p-1 rounded-xl">
+          <span className="text-[10px] font-bold text-stone-400 px-1 hidden sm:inline uppercase">Scale:</span>
+          {(['auto', 'standard', 'large', 'xl'] as const).map(mode => (
+            <button
+              key={mode}
+              onClick={() => handleSetTvScale(mode)}
+              className={`px-2 py-1 rounded-lg text-[10px] sm:text-xs font-bold transition-colors cursor-pointer uppercase ${
+                tvScale === mode
+                  ? 'bg-amber-400 text-stone-950 font-black shadow-xs'
+                  : 'text-stone-300 hover:text-white'
+              }`}
+              title={
+                mode === 'auto' ? 'Auto Dynamic Screen Adjust' :
+                mode === 'standard' ? 'Standard Display' :
+                mode === 'large' ? 'Large Screen / TV' : 'Extra Large Display'
+              }
+            >
+              {mode === 'auto' ? 'Auto' : mode === 'standard' ? 'Std' : mode === 'large' ? 'Lg' : 'XL'}
+            </button>
+          ))}
         </div>
 
         <button

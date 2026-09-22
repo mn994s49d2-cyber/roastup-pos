@@ -137,7 +137,16 @@ export interface CartItem {
 export interface Order {
   id: string;
   orderNumber: number; // e.g. 101, 102
-  timestamp: string;
+  ticketNumber?: string; // e.g. "A-104"
+  timestamp: string; // ISO string of order placed time
+  placedAt?: string; // Explicit order placed ISO string
+  dueTime?: string; // Target order due time string (e.g. "18:30" or ISO string)
+  dueAt?: string; // Target order due ISO timestamp (e.g. "2026-09-21T18:30:00.000Z")
+  dueMinutes?: number; // Target lead time in minutes
+  isPreOrder?: boolean; // True if scheduled for later prep
+  timeOfDay?: 'lunch' | 'afternoon' | 'dinner' | string; // Day period for service batching
+  pickupTime?: string; // Friendly pickup display e.g. "Today at 18:30 (Dinner)"
+  notes?: string; // Ticket notes, e.g. "[PRE-ORDER DUE: 18:30 (DINNER)] Please pack extra napkins"
   type: OrderType;
   items: CartItem[];
   subtotal: number;
@@ -161,6 +170,46 @@ export interface Order {
   refundedAt?: string;
   refundReason?: string;
   printedReceipt?: boolean;
+  source?: string;
+  loyaltyInfo?: LoyaltyTransactionInfo;
+}
+
+export interface LoyaltyReward {
+  id: string;
+  title: string;
+  pointsCost: number;
+  discountValue: number;
+}
+
+export interface LoyaltyMember {
+  id: string; // e.g. "RP-88392"
+  name: string;
+  points: number;
+  tier?: string;
+  phone?: string;
+  availableRewards?: LoyaltyReward[];
+}
+
+export interface LoyaltyVoucher {
+  memberId: string;
+  rewardId: string;
+  pointsCost: number;
+  title: string;
+  discountValue: number;
+}
+
+export interface LoyaltyTransactionInfo {
+  memberId: string;
+  memberName?: string;
+  pointsRedeemed?: number;
+  pointsEarned?: number;
+  previousPoints?: number;
+  newPoints?: number;
+  rewardId?: string;
+  pointsCost?: number;
+  rewardTitle?: string;
+  discountValue?: number;
+  qrPayload?: string;
 }
 
 export interface InventoryItem {

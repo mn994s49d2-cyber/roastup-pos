@@ -17,13 +17,19 @@ import {
   MessageSquare,
   ArrowRight,
   SlidersHorizontal,
-  RotateCcw
+  RotateCcw,
+  QrCode,
+  CheckCircle2,
+  Award,
+  Clock
 } from 'lucide-react';
-import { MenuItem, CartItem, OrderType, Order, AppCustomizationSettings } from '../../types';
+import { MenuItem, CartItem, OrderType, Order, AppCustomizationSettings, LoyaltyTransactionInfo } from '../../types';
 import { CustomOrderModal } from './CustomOrderModal';
 import { PaymentModal } from './PaymentModal';
+import { LoyaltyScannerModal } from '../loyalty/LoyaltyScannerModal';
 import { RoastupPotatoIcon } from '../brand/RoastupBrand';
 import { sound } from '../../utils/sound';
+import { formatOrderTime } from '../../utils/orderTime';
 
 interface PosRegisterProps {
   menuItems: MenuItem[];
@@ -63,6 +69,92 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
   const [discountPercent, setDiscountPercent] = useState<number>(0);
   const [showNoteInput, setShowNoteInput] = useState<boolean>(false);
   const [showPaymentModal, setShowPaymentModal] = useState<boolean>(false);
+  
+  // Timing & Schedule state (Order Placed & Order Due)
+  const [dueMinutes, setDueMinutes] = useState<number>(10);
+  const [customDueTime, setCustomDueTime] = useState<string>('');
+  const [showCustomDueInput, setShowCustomDueInput] = useState<boolean>(false);
+  const [currentClock, setCurrentClock] = useState<Date>(new Date());
+
+  // Tick clock for live placed time calculation
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentClock(new Date()), 10000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Sync default due minutes with order type
+  useEffect(() => {
+    if (!showCustomDueInput) {
+      setDueMinutes(orderType === 'dine_in' ? 12 : 10);
+    }
+  }, [orderType, showCustomDueInput]);
+
+  const placedTimeStr = formatOrderTime(currentClock.toISOString());
+
+  const getComputedDueIso = () => {
+    if (showCustomDueInput && customDueTime) {
+      const [h, m] = customDueTime.split(':').map(Number);
+      if (!isNaN(h) && !isNaN(m)) {
+        const d = new Date(currentClock);
+        d.setHours(h, m, 0, 0);
+        return d.toISOString();
+      }
+    }
+    return new Date(currentClock.getTime() + dueMinutes * 60000).toISOString();
+  };
+
+  const dueTimeStr = showCustomDueInput && customDueTime ? customDueTime : formatOrderTime(getComputedDueIso());
+
+  // Loyalty QR & member state
+  const [showLoyaltyScanner, setShowLoyaltyScanner] = useState<boolean>(false);
+  const [attachedLoyalty, setAttachedLoyalty] = useState<LoyaltyTransactionInfo | null>(null);
+  const [loyaltyToast, setLoyaltyToast] = useState<string | null>(null);
+
+  // Auto-dismiss loyalty toast
+  useEffect(() => {
+    if (loyaltyToast) {
+      const timer = setTimeout(() => setLoyaltyToast(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [loyaltyToast]);
+
+  const handleApplyLoyalty = (info: LoyaltyTransactionInfo) => {
+    setAttachedLoyalty(info);
+
+    // If guest name is blank, populate with member name
+    if (!customerName && info.memberName) {
+      setCustomerName(info.memberName);
+    }
+
+    // If a voucher was scanned, add the discount line item to the cart
+    if (info.discountValue && info.discountValue > 0) {
+      const discountItem: CartItem = {
+        cartItemId: `loyalty-disc-${Date.now()}`,
+        menuItemId: 'loyalty-reward',
+        name: `Discount - ${info.rewardTitle || 'Reward Voucher'}`,
+        category: 'Discount',
+        variation: {
+          id: 'disc',
+          name: 'Standard',
+          sku: 'LOYALTY-DISC',
+          price: -Math.abs(info.discountValue)
+        },
+        quantity: 1,
+        unitPrice: -Math.abs(info.discountValue),
+        totalPrice: -Math.abs(info.discountValue),
+        selectedModifiers: [],
+        specialRemovals: [],
+        specialAdditions: []
+      };
+
+      setCart(prev => [...prev, discountItem]);
+      setLoyaltyToast(`Voucher Applied: ${info.rewardTitle || 'Reward'} (-£${info.discountValue.toFixed(2)})`);
+    } else {
+      setLoyaltyToast(`Loyalty Member Attached: ${info.memberName || info.memberId} (${info.previousPoints ?? 0} pts)`);
+    }
+
+    sound.playRegisterDing();
+  };
 
   // Sync cart to server for Customer-Facing Display (CFD)
   useEffect(() => {
@@ -191,6 +283,8 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
     setCart([]);
     setDiscountPercent(0);
     setOrderNote('');
+    setAttachedLoyalty(null);
+    setLoyaltyToast(null);
   };
 
   // Calculations
@@ -329,12 +423,20 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
 
                 const hasModifiers = item.modifierSets && item.modifierSets.length > 0;
                 const hasMultipleVariations = item.variations && item.variations.length > 1;
+                const isSoldOut = !item.inStock;
 
                 return (
                   <div
                     key={item.id}
-                    onClick={() => handleItemClick(item)}
-                    className="group bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 hover:border-amber-400 dark:hover:border-amber-400 rounded-3xl overflow-hidden flex flex-col justify-between cursor-pointer transition-all shadow-xs hover:shadow-md select-none relative"
+                    onClick={() => {
+                      if (isSoldOut) return;
+                      handleItemClick(item);
+                    }}
+                    className={`group bg-white dark:bg-stone-900 border rounded-3xl overflow-hidden flex flex-col justify-between transition-all select-none relative ${
+                      isSoldOut
+                        ? 'opacity-60 grayscale cursor-not-allowed border-stone-200 dark:border-stone-800'
+                        : 'cursor-pointer border-stone-200 dark:border-stone-800 hover:border-amber-400 dark:hover:border-amber-400 shadow-xs hover:shadow-md'
+                    }`}
                   >
                     {/* Visual Banner Header */}
                     <div className="h-32 w-full bg-stone-100 dark:bg-stone-800 relative overflow-hidden shrink-0 border-b border-stone-100 dark:border-stone-800">
@@ -342,12 +444,21 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
                         <img
                           src={item.imageUrl}
                           alt={item.name}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          className={`w-full h-full object-cover transition-transform duration-300 ${!isSoldOut ? 'group-hover:scale-105' : ''}`}
                           referrerPolicy="no-referrer"
                         />
                       ) : (
                         <div className="w-full h-full bg-gradient-to-br from-amber-50 dark:from-stone-800 via-stone-100 dark:via-stone-900 to-amber-100/60 flex items-center justify-center">
                           <RoastupPotatoIcon size="md" className="opacity-40 group-hover:scale-110 transition-transform" />
+                        </div>
+                      )}
+
+                      {/* Sold Out Overlay */}
+                      {isSoldOut && (
+                        <div className="absolute inset-0 bg-stone-950/65 backdrop-blur-2xs flex items-center justify-center z-10">
+                          <span className="px-3 py-1 bg-stone-900/90 text-rose-300 text-xs font-black uppercase tracking-wider rounded-xl border border-rose-500/40 shadow-sm">
+                            Sold Out
+                          </span>
                         </div>
                       )}
 
@@ -379,7 +490,7 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
                     {/* Card Body */}
                     <div className="p-4 flex-1 flex flex-col justify-between">
                       <div>
-                        <h4 className="font-black text-sm text-stone-900 dark:text-white group-hover:text-amber-600 dark:group-hover:text-amber-400 transition-colors line-clamp-1">
+                        <h4 className={`font-black text-sm text-stone-900 dark:text-white transition-colors line-clamp-1 ${!isSoldOut ? 'group-hover:text-amber-600 dark:group-hover:text-amber-400' : 'line-through text-stone-500 dark:text-stone-400'}`}>
                           {item.name}
                         </h4>
                         <p className="text-xs text-stone-500 dark:text-stone-400 mt-1 line-clamp-2 leading-relaxed h-8">
@@ -395,10 +506,16 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
                             : 'Standard'}
                         </span>
 
-                        <div className="flex items-center gap-1 bg-amber-400 group-hover:bg-amber-500 text-stone-950 font-black text-xs px-2.5 py-1 rounded-xl transition-colors shadow-2xs">
-                          <span>{hasModifiers || hasMultipleVariations ? 'Options' : '+ Add'}</span>
-                          <ChevronRight className="w-3.5 h-3.5" />
-                        </div>
+                        {isSoldOut ? (
+                          <div className="flex items-center gap-1 bg-stone-200 dark:bg-stone-800 text-stone-500 dark:text-stone-400 font-bold text-xs px-2.5 py-1 rounded-xl">
+                            <span>Sold Out</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1 bg-amber-400 group-hover:bg-amber-500 text-stone-950 font-black text-xs px-2.5 py-1 rounded-xl transition-colors shadow-2xs">
+                            <span>{hasModifiers || hasMultipleVariations ? 'Options' : '+ Add'}</span>
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -485,6 +602,137 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
               </div>
             )}
           </div>
+
+          {/* Order Timing: Placed Time & Target Due Time Schedule */}
+          <div className="p-2.5 rounded-2xl bg-stone-100/70 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700 space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center gap-1.5 text-stone-600 dark:text-stone-300 font-mono">
+                <Clock className="w-3.5 h-3.5 text-stone-400" />
+                <span className="text-[10px] uppercase font-bold text-stone-400 font-sans">Placed:</span>
+                <span className="font-bold">{placedTimeStr}</span>
+              </div>
+              <div className="flex items-center gap-1.5 font-mono">
+                <span className="text-[10px] uppercase font-bold text-amber-600 dark:text-amber-400 font-sans">Due:</span>
+                <span className="font-black text-amber-900 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/80 px-2 py-0.5 rounded-md border border-amber-300 dark:border-amber-800">
+                  {dueTimeStr}
+                </span>
+              </div>
+            </div>
+
+            {/* Prep Lead Time Presets */}
+            <div className="flex items-center gap-1 text-[11px]">
+              <span className="text-[10px] text-stone-400 uppercase font-bold shrink-0 mr-0.5">Prep:</span>
+              {[
+                { label: '10m', mins: 10 },
+                { label: '15m', mins: 15 },
+                { label: '20m', mins: 20 },
+                { label: '30m', mins: 30 }
+              ].map(preset => {
+                const isActive = !showCustomDueInput && dueMinutes === preset.mins;
+                return (
+                  <button
+                    key={preset.mins}
+                    type="button"
+                    onClick={() => {
+                      setShowCustomDueInput(false);
+                      setDueMinutes(preset.mins);
+                    }}
+                    className={`flex-1 py-1 rounded-lg font-bold font-mono transition-all cursor-pointer text-center ${
+                      isActive
+                        ? 'bg-amber-400 text-stone-950 shadow-2xs font-black'
+                        : 'bg-white dark:bg-stone-800 text-stone-600 dark:text-stone-300 border border-stone-200 dark:border-stone-700 hover:bg-stone-50'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                onClick={() => setShowCustomDueInput(!showCustomDueInput)}
+                className={`px-2 py-1 rounded-lg font-bold transition-all cursor-pointer text-center text-xs ${
+                  showCustomDueInput
+                    ? 'bg-amber-400 text-stone-950 shadow-2xs font-black'
+                    : 'bg-white dark:bg-stone-800 text-stone-600 dark:text-stone-300 border border-stone-200 dark:border-stone-700 hover:bg-stone-50'
+                }`}
+                title="Set custom pickup due time"
+              >
+                Custom
+              </button>
+            </div>
+
+            {/* Custom Time Picker */}
+            {showCustomDueInput && (
+              <div className="pt-1 flex items-center justify-between gap-2 border-t border-stone-200/60 dark:border-stone-700/60">
+                <span className="text-[11px] text-stone-500 font-semibold">Exact Pickup Due:</span>
+                <input
+                  type="time"
+                  value={customDueTime || dueTimeStr}
+                  onChange={e => setCustomDueTime(e.target.value)}
+                  className="px-2 py-1 bg-white dark:bg-stone-850 border border-amber-300 dark:border-amber-700 rounded-lg text-xs font-mono font-bold text-stone-900 dark:text-white focus:outline-hidden"
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Scan Loyalty QR Button */}
+          <button
+            type="button"
+            onClick={() => setShowLoyaltyScanner(true)}
+            className="w-full py-2 px-3 rounded-2xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/80 text-amber-950 dark:text-amber-300 font-black text-xs flex items-center justify-center gap-2 cursor-pointer transition-all shadow-2xs hover:shadow-xs"
+          >
+            <QrCode className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+            <span>Scan Loyalty QR</span>
+          </button>
+
+          {/* Attached Loyalty Member Badge */}
+          {attachedLoyalty?.memberId && (
+            <div className="p-2.5 rounded-2xl bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-950/40 dark:to-orange-950/30 border border-amber-300 dark:border-amber-700/60 flex items-center justify-between text-xs animate-in fade-in duration-200">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-6 h-6 rounded-lg bg-amber-400 text-stone-950 flex items-center justify-center font-black shrink-0 text-[10px] shadow-2xs">
+                  ★
+                </div>
+                <div className="min-w-0">
+                  <p className="font-extrabold text-stone-900 dark:text-white truncate text-xs">
+                    Loyalty Member: {attachedLoyalty.memberName || attachedLoyalty.memberId}
+                  </p>
+                  <p className="text-[10px] text-amber-800 dark:text-amber-300 font-semibold">
+                    Points: <strong>{attachedLoyalty.previousPoints ?? 0} pts</strong>
+                    {attachedLoyalty.rewardTitle && (
+                      <span className="ml-1 text-emerald-700 dark:text-emerald-400 font-bold">
+                        • {attachedLoyalty.rewardTitle}
+                      </span>
+                    )}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAttachedLoyalty(null)}
+                className="p-1 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 cursor-pointer rounded-lg hover:bg-black/5"
+                title="Detach Loyalty"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* Loyalty Toast Banner */}
+          {loyaltyToast && (
+            <div className="p-2 rounded-xl bg-emerald-100 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 text-xs font-bold flex items-center justify-between animate-in fade-in duration-200">
+              <div className="flex items-center gap-1.5 truncate">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span className="truncate">{loyaltyToast}</span>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setLoyaltyToast(null)} 
+                className="text-emerald-700 hover:text-emerald-900 p-0.5 cursor-pointer"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Ticket Items List */}
@@ -668,7 +916,10 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
           orderType={orderType}
           customerName={customerName}
           tableNumber={tableNumber}
+          dueMinutes={dueMinutes}
+          dueTime={getComputedDueIso()}
           customization={customization}
+          loyaltyInfo={attachedLoyalty}
           onClose={() => setShowPaymentModal(false)}
           onPaymentComplete={(createdOrder) => {
             onOrderCreated(createdOrder);
@@ -677,8 +928,18 @@ export const PosRegister: React.FC<PosRegisterProps> = ({
             setTableNumber('');
             setDiscountPercent(0);
             setOrderNote('');
+            setAttachedLoyalty(null);
+            setLoyaltyToast(null);
             setShowPaymentModal(false);
           }}
+        />
+      )}
+
+      {/* Loyalty QR Code & Voucher Scanner Modal */}
+      {showLoyaltyScanner && (
+        <LoyaltyScannerModal
+          onClose={() => setShowLoyaltyScanner(false)}
+          onApplyLoyalty={handleApplyLoyalty}
         />
       )}
     </div>

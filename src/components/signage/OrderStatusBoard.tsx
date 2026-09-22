@@ -12,6 +12,7 @@ import {
 import { Order } from '../../types';
 import { sound } from '../../utils/sound';
 import { RoastupLogo, RoastupPotatoIcon } from '../brand/RoastupBrand';
+import { getOrderPlacedTime, getOrderDueTime } from '../../utils/orderTime';
 
 interface OrderStatusBoardProps {
   orders: Order[];
@@ -132,7 +133,7 @@ export const OrderStatusBoard: React.FC<OrderStatusBoardProps> = ({
                   {preparingOrders.map(order => (
                     <div
                       key={order.id}
-                      className="p-4 rounded-2xl bg-amber-50/50 dark:bg-stone-800/60 border border-amber-200 dark:border-stone-700 flex flex-col items-center justify-center text-center shadow-2xs"
+                      className="p-3.5 rounded-2xl bg-amber-50/60 dark:bg-stone-800/60 border border-amber-200 dark:border-stone-700 flex flex-col items-center justify-center text-center shadow-2xs"
                     >
                       <span className="text-3xl lg:text-4xl font-black font-mono tracking-tight text-stone-900 dark:text-white">
                         #{order.orderNumber}
@@ -140,6 +141,11 @@ export const OrderStatusBoard: React.FC<OrderStatusBoardProps> = ({
                       <span className="text-[10px] font-bold text-amber-800 dark:text-amber-400 uppercase tracking-wider mt-1">
                         {order.type === 'dine_in' ? '🍽️ Dine In' : '🛍️ Takeaway'}
                       </span>
+                      <div className="mt-2 pt-1.5 border-t border-amber-200/60 dark:border-stone-700/60 w-full flex items-center justify-center gap-2 text-[10px] font-mono text-stone-600 dark:text-stone-300">
+                        <span>Placed <strong className="text-stone-800 dark:text-stone-200">{getOrderPlacedTime(order)}</strong></span>
+                        <span className="text-stone-400">•</span>
+                        <span>Due <strong className="text-amber-800 dark:text-amber-300 font-black">{getOrderDueTime(order)}</strong></span>
+                      </div>
                     </div>
                   ))}
                 </div>
